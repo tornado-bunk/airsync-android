@@ -110,6 +110,7 @@ fun SettingsView(
 ) {
     val haptics = LocalHapticFeedback.current
     var showAppSelectionSheet by remember { mutableStateOf(false) }
+    var showMediaAppSelectionSheet by remember { mutableStateOf(false) }
 
     val density = androidx.compose.ui.platform.LocalDensity.current
     val minHeaderHeight = 200.dp
@@ -385,7 +386,11 @@ fun SettingsView(
                         onClearIconSyncMessage = {
                             viewModel.clearIconSyncMessage()
                         },
-                        isConnected = uiState.isConnected
+                        isConnected = uiState.isConnected,
+                        onRestartBleServer = {
+                            com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()?.restartServer()
+                            Toast.makeText(context, "BLE GATT Server restarted", Toast.LENGTH_SHORT).show()
+                        }
                     )
                 }
             }
@@ -534,6 +539,11 @@ fun SettingsView(
                                 isMacMediaControlsEnabled = uiState.isMacMediaControlsEnabled,
                                 onToggleMacMediaControls = { enabled ->
                                     viewModel.setMacMediaControlsEnabled(enabled)
+                                },
+                                onOpenExcludedApps = {
+                                    HapticUtil.performClick(haptics)
+                                    viewModel.loadMediaApps(context)
+                                    showMediaAppSelectionSheet = true
                                 }
                             )
 
@@ -636,6 +646,21 @@ fun SettingsView(
                 viewModel.saveAllNotificationApps(context, updatedList)
             },
             isLoading = apps.isEmpty()
+        )
+    }
+
+    if (showMediaAppSelectionSheet) {
+        val mediaApps by viewModel.mediaApps.collectAsState()
+        AppSelectionSheet(
+            onDismissRequest = { showMediaAppSelectionSheet = false },
+            apps = mediaApps,
+            onAppToggle = { pkg, isExcluded ->
+                viewModel.toggleExcludedMediaPackage(pkg, isExcluded)
+            },
+            onSaveAll = { updatedList ->
+                viewModel.saveAllMediaApps(updatedList)
+            },
+            isLoading = mediaApps.isEmpty()
         )
     }
 }

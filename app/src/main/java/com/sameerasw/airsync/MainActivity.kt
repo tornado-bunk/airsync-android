@@ -11,6 +11,7 @@ import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -39,7 +40,7 @@ import com.sameerasw.airsync.utils.KeyguardHelper
 import com.sameerasw.airsync.utils.NotesRoleManager
 import com.sameerasw.airsync.utils.PermissionUtil
 import com.sameerasw.airsync.utils.ShortcutUtil
-import com.sameerasw.airsync.utils.UDPDiscoveryManager
+import com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator
 import com.sameerasw.airsync.utils.WebSocketUtil
 import com.canerture.exceptionreport.handler.ExceptionReport
 import com.sameerasw.airsync.crash.CrashHandler
@@ -176,8 +177,8 @@ class MainActivity : ComponentActivity() {
         // Install and configure the splash screen before any UI rendering
         val splashScreen = installSplashScreen()
 
-        // Make activity draw behind system bars - let the theme handle the colors
-        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Enable edge-to-edge for Android 15+ and backward compatibility
+        enableEdgeToEdge()
 
         super.onCreate(savedInstanceState)
 
@@ -613,8 +614,8 @@ class MainActivity : ComponentActivity() {
             val isDiscoveryEnabled = runBlocking {
                 ds.getDeviceDiscoveryEnabled().first()
             }
-            UDPDiscoveryManager.start(this, isDiscoveryEnabled)
-            UDPDiscoveryManager.burstBroadcast(this)
+            DiscoveryOrchestrator.start(this, isDiscoveryEnabled)
+            DiscoveryOrchestrator.burstBroadcast(this)
         }
     }
 
