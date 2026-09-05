@@ -90,11 +90,12 @@ class DataStoreManager(private val context: Context) {
         private val DEVICE_ID = stringPreferencesKey("device_id")
         private val USE_BLUR = booleanPreferencesKey("use_blur")
         private val PITCH_BLACK_THEME = booleanPreferencesKey("pitch_black_theme")
-        private val SENTRY_REPORTING_ENABLED = booleanPreferencesKey("sentry_reporting_enabled")
         private val QUICK_SHARE_ENABLED = booleanPreferencesKey("quick_share_enabled")
+        private val FILE_ACCESS_ENABLED = booleanPreferencesKey("file_access_enabled")
 
         // Widget preferences
-        private val WIDGET_TRANSPARENCY = androidx.datastore.preferences.core.floatPreferencesKey("widget_transparency")
+        private val WIDGET_TRANSPARENCY =
+            androidx.datastore.preferences.core.floatPreferencesKey("widget_transparency")
 
         // AirBridge relay preferences
         private val AIRBRIDGE_ENABLED = booleanPreferencesKey("airbridge_enabled")
@@ -102,6 +103,10 @@ class DataStoreManager(private val context: Context) {
         private val AIRBRIDGE_PAIRING_ID = stringPreferencesKey("airbridge_pairing_id")
         private val AIRBRIDGE_SECRET = stringPreferencesKey("airbridge_secret")
         private val REMOTE_FLIPPED = booleanPreferencesKey("remote_flipped")
+
+        private val BLE_SYNC_ENABLED = booleanPreferencesKey("ble_sync_enabled")
+        private val BLE_AUTO_CONNECT_ENABLED = booleanPreferencesKey("ble_auto_connect_enabled")
+        private val NOTIFY_ON_CRASH = booleanPreferencesKey("notify_on_crash")
 
         private const val NETWORK_DEVICES_PREFIX = "network_device_"
         private const val NETWORK_CONNECTIONS_PREFIX = "network_connections_"
@@ -324,17 +329,7 @@ class DataStoreManager(private val context: Context) {
         }
     }
 
-    suspend fun setSentryReportingEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
-            preferences[SENTRY_REPORTING_ENABLED] = enabled
-        }
-    }
 
-    fun getSentryReportingEnabled(): Flow<Boolean> {
-        return context.dataStore.data.map { preferences ->
-            preferences[SENTRY_REPORTING_ENABLED] ?: true // Default to enabled
-        }
-    }
 
     suspend fun setQuickShareEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
@@ -345,6 +340,18 @@ class DataStoreManager(private val context: Context) {
     fun isQuickShareEnabled(): Flow<Boolean> {
         return context.dataStore.data.map { preferences ->
             preferences[QUICK_SHARE_ENABLED] ?: false // Default to disabled
+        }
+    }
+
+    suspend fun setFileAccessEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[FILE_ACCESS_ENABLED] = enabled
+        }
+    }
+
+    fun isFileAccessEnabled(): Flow<Boolean> {
+        return context.dataStore.data.map { preferences ->
+            preferences[FILE_ACCESS_ENABLED] != false // Default to enabled
         }
     }
 
@@ -654,6 +661,18 @@ class DataStoreManager(private val context: Context) {
     fun isRemoteFlipped(): Flow<Boolean> {
         return context.dataStore.data.map { preferences ->
             preferences[REMOTE_FLIPPED] ?: false
+        }
+    }
+
+    suspend fun setNotifyOnCrashEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[NOTIFY_ON_CRASH] = enabled
+        }
+    }
+
+    fun getNotifyOnCrashEnabled(): Flow<Boolean> {
+        return context.dataStore.data.map { preferences ->
+            preferences[NOTIFY_ON_CRASH] != false
         }
     }
 
@@ -1049,4 +1068,18 @@ class DataStoreManager(private val context: Context) {
             prefs[ESSENTIALS_CONNECTION_ENABLED] ?: false
         }
     }
+
+    suspend fun setBleSyncEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[BLE_SYNC_ENABLED] = enabled }
+    }
+
+    fun getBleSyncEnabled(): Flow<Boolean> =
+        context.dataStore.data.map { it[BLE_SYNC_ENABLED] ?: false }
+
+    suspend fun setBleAutoConnectEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[BLE_AUTO_CONNECT_ENABLED] = enabled }
+    }
+
+    fun getBleAutoConnectEnabled(): Flow<Boolean> =
+        context.dataStore.data.map { it[BLE_AUTO_CONNECT_ENABLED] ?: true }
 }

@@ -87,6 +87,7 @@ object DeviceInfoUtil {
 
                 @Suppress("DEPRECATION")
                 val wifiInfo = wifiManager.connectionInfo
+
                 @Suppress("DEPRECATION")
                 val ipAddress = wifiInfo.ipAddress
                 if (ipAddress != 0) {
@@ -151,6 +152,11 @@ object DeviceInfoUtil {
                     volume = volumePercent,
                     isMuted = isMuted,
                     albumArt = null,
+                    albumArtLite = null,
+                    durationMs = 0L,
+                    positionMs = 0L,
+                    positionTimestampMs = 0L,
+                    isBuffering = false,
                     likeStatus = "none"
                 )
             }
@@ -166,11 +172,16 @@ object DeviceInfoUtil {
                 volume = volumePercent,
                 isMuted = isMuted,
                 albumArt = mediaInfo.albumArt,
+                albumArtLite = mediaInfo.albumArtLite,
+                durationMs = mediaInfo.durationMs,
+                positionMs = mediaInfo.positionMs,
+                positionTimestampMs = mediaInfo.positionTimestampMs,
+                isBuffering = mediaInfo.isBuffering,
                 likeStatus = mediaInfo.likeStatus
             )
         } catch (e: Exception) {
             Log.e("DeviceInfoUtil", "Error getting audio info: ${e.message}")
-            AudioInfo(false, "", "", 0, true, null, "none")
+            AudioInfo(false, "", "", 0, true, null, null, 0L, 0L, 0L, false, "none")
         }
     }
 
@@ -188,6 +199,11 @@ object DeviceInfoUtil {
             volume = audioInfo.volume,
             isMuted = audioInfo.isMuted,
             albumArt = audioInfo.albumArt,
+            albumArtLite = audioInfo.albumArtLite,
+            duration = audioInfo.durationMs,
+            position = audioInfo.positionMs,
+            positionTimestamp = audioInfo.positionTimestampMs,
+            isBuffering = audioInfo.isBuffering,
             likeStatus = audioInfo.likeStatus
         )
     }
@@ -195,7 +211,7 @@ object DeviceInfoUtil {
     fun isBlurProblematicDevice(): Boolean {
         // Samsung devices on One UI 7 (Android 15) or below have a broken blur implementation
         // that causes a gray screen overlay. Disable it for them. (╯°□°）╯︵ ┻━┻
-        return Build.MANUFACTURER.equals("samsung", ignoreCase = true) && 
+        return Build.MANUFACTURER.equals("samsung", ignoreCase = true) &&
                 Build.VERSION.SDK_INT <= 35 // Android 15
     }
 
@@ -209,7 +225,8 @@ object DeviceInfoUtil {
     }
 
     fun isPowerSaveMode(context: Context): Boolean {
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val powerManager =
+            context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
         return powerManager?.isPowerSaveMode == true
     }
 }

@@ -7,10 +7,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
@@ -20,23 +18,37 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.sameerasw.airsync.R
 import com.sameerasw.airsync.domain.model.DeviceInfo
 import com.sameerasw.airsync.domain.model.UiState
 import com.sameerasw.airsync.presentation.ui.components.cards.ClipboardFeaturesCard
@@ -44,13 +56,15 @@ import com.sameerasw.airsync.presentation.ui.components.cards.DefaultTabCard
 import com.sameerasw.airsync.presentation.ui.components.cards.DeveloperModeCard
 import com.sameerasw.airsync.presentation.ui.components.cards.DeviceInfoCard
 import com.sameerasw.airsync.presentation.ui.components.cards.ExpandNetworkingCard
+import com.sameerasw.airsync.presentation.ui.components.cards.IconToggleItem
 import com.sameerasw.airsync.presentation.ui.components.cards.MediaSyncCard
 import com.sameerasw.airsync.presentation.ui.components.cards.NotificationSyncCard
 import com.sameerasw.airsync.presentation.ui.components.cards.PermissionsCard
 import com.sameerasw.airsync.presentation.ui.components.cards.QuickSettingsTilesCard
 import com.sameerasw.airsync.presentation.ui.components.cards.AirBridgeCard
-import com.sameerasw.airsync.presentation.ui.components.cards.SendNowPlayingCard
+
 import com.sameerasw.airsync.presentation.ui.components.cards.SmartspacerCard
+import com.sameerasw.airsync.presentation.ui.components.sheets.AppSelectionSheet
 import com.sameerasw.airsync.presentation.viewmodel.AirSyncViewModel
 import com.sameerasw.airsync.utils.HapticUtil
 import kotlinx.coroutines.CoroutineScope
@@ -83,6 +97,8 @@ fun SettingsView(
     deviceInfo: DeviceInfo,
     versionName: String?,
     viewModel: AirSyncViewModel,
+    activeCategory: String? = null,
+    onCategoryChange: (String?) -> Unit = {},
     scrollState: androidx.compose.foundation.ScrollState = rememberScrollState(),
     scope: CoroutineScope = androidx.compose.runtime.rememberCoroutineScope(),
     onSendMessage: (String) -> Unit = {},
@@ -93,11 +109,64 @@ fun SettingsView(
     onToggleDeveloperMode: () -> Unit = {}
 ) {
     val haptics = LocalHapticFeedback.current
+    var showAppSelectionSheet by remember { mutableStateOf(false) }
+
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val minHeaderHeight = 200.dp
+    val maxHeaderHeight = 500.dp
+    var headerHeight by remember { mutableStateOf(minHeaderHeight) }
+
+    LaunchedEffect(activeCategory) {
+        headerHeight = minHeaderHeight
+    }
+
+    val nestedScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                val delta = available.y
+                if (delta < 0 && headerHeight > minHeaderHeight) {
+                    val oldHeight = headerHeight
+                    headerHeight = with(density) {
+                        (oldHeight.toPx() + delta).toDp()
+                    }.coerceAtLeast(minHeaderHeight)
+                    val consumed = oldHeight - headerHeight
+                    return Offset(0f, with(density) { -consumed.toPx() })
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                val delta = available.y
+                if (delta > 0) {
+                    val oldHeight = headerHeight
+                    headerHeight = with(density) {
+                        (oldHeight.toPx() + delta).toDp()
+                    }.coerceAtMost(maxHeaderHeight)
+
+                    if (headerHeight == maxHeaderHeight && oldHeight < maxHeaderHeight) {
+                        HapticUtil.performClick(haptics)
+                    }
+
+                    val produced = headerHeight - oldHeight
+                    return Offset(0f, with(density) { produced.toPx() })
+                }
+                return Offset.Zero
+            }
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .padding(bottom = innerPaddingBottom)
+            .nestedScroll(nestedScrollConnection)
             .verticalScroll(scrollState)
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -112,251 +181,37 @@ fun SettingsView(
                 .fillMaxWidth()
         )
 
-        // Top Section (Untitled)
-        RoundedCardContainer {
-            PermissionsCard(missingPermissionsCount = uiState.missingPermissions.size)
+        if (activeCategory == null) {
+            // Top 
+            RoundedCardContainer {
+                PermissionsCard(missingPermissionsCount = uiState.missingPermissions.size)
 
-            // Help and guides card
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
+                // Help and guides card
+                com.sameerasw.airsync.presentation.ui.components.cards.IconToggleItem(
+                    iconRes = com.sameerasw.airsync.R.drawable.rounded_info_24,
+                    title = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.label_help_guides),
+                    description = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_help_guides),
+                    showToggle = false,
+                    onClick = {
                         HapticUtil.performClick(haptics)
                         onShowHelp()
-                    },
-                shape = MaterialTheme.shapes.extraSmall,
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.label_help_guides),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_help_guides),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
                     }
+                )
 
-                    Icon(
-                        painter = androidx.compose.ui.res.painterResource(id = com.sameerasw.airsync.R.drawable.rounded_keyboard_arrow_right_24),
-                        contentDescription = "Open help",
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.onSurface
+                QuickSettingsTilesCard(
+                    isConnectionTileAdded = com.sameerasw.airsync.utils.QuickSettingsUtil.isQSTileAdded(
+                        context,
+                        com.sameerasw.airsync.service.AirSyncTileService::class.java
+                    ),
+                    isClipboardTileAdded = com.sameerasw.airsync.utils.QuickSettingsUtil.isQSTileAdded(
+                        context,
+                        com.sameerasw.airsync.service.ClipboardTileService::class.java
                     )
-                }
-            }
-
-            QuickSettingsTilesCard(
-                isConnectionTileAdded = com.sameerasw.airsync.utils.QuickSettingsUtil.isQSTileAdded(
-                    context,
-                    com.sameerasw.airsync.service.AirSyncTileService::class.java
-                ),
-                isClipboardTileAdded = com.sameerasw.airsync.utils.QuickSettingsUtil.isQSTileAdded(
-                    context,
-                    com.sameerasw.airsync.service.ClipboardTileService::class.java
-                ),
-                isQuickShareTileAdded = com.sameerasw.airsync.utils.QuickSettingsUtil.isQSTileAdded(
-                    context,
-
-                )
-            )
-        }
-
-        // App Section
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsCategoryTitle(androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.cat_app))
-            RoundedCardContainer {
-                DefaultTabCard(
-                    currentDefaultTab = uiState.defaultTab,
-                    onDefaultTabChange = { tab -> viewModel.setDefaultTab(tab) }
-                )
-
-                SendNowPlayingCard(
-                    isSendNowPlayingEnabled = uiState.isBlurSettingEnabled,
-                    onToggleSendNowPlaying = { enabled: Boolean ->
-                        viewModel.setUseBlurEnabled(enabled, context)
-                    },
-                    title = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.label_use_blur),
-                    subtitle = when {
-                        com.sameerasw.airsync.utils.DeviceInfoUtil.isBlurProblematicDevice() ->
-                            androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_blur_disabled_samsung)
-
-                        uiState.isPowerSaveMode && uiState.isBlurSettingEnabled ->
-                            androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_blur_disabled_power_save)
-
-                        else -> androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_use_blur)
-                    },
-                    enabled = !com.sameerasw.airsync.utils.DeviceInfoUtil.isBlurProblematicDevice()
-                )
-
-                SendNowPlayingCard(
-                    isSendNowPlayingEnabled = uiState.isPitchBlackThemeEnabled,
-                    onToggleSendNowPlaying = { enabled: Boolean ->
-                        viewModel.setPitchBlackThemeEnabled(enabled)
-                    },
-                    title = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.label_pitch_black_theme),
-                    subtitle = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_pitch_black_theme)
-                )
-
-                SendNowPlayingCard(
-                    isSendNowPlayingEnabled = uiState.isSentryReportingEnabled,
-                    onToggleSendNowPlaying = { enabled: Boolean ->
-                        viewModel.setSentryReportingEnabled(enabled)
-                    },
-                    title = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.label_error_reporting),
-                    subtitle = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.subtitle_error_reporting)
                 )
             }
-        }
 
-        // Sync Section
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsCategoryTitle("Sync")
-            RoundedCardContainer {
-                NotificationSyncCard(
-                    isNotificationEnabled = uiState.isNotificationEnabled,
-                    isNotificationSyncEnabled = uiState.isNotificationSyncEnabled,
-                    onToggleSync = { enabled ->
-                        viewModel.setNotificationSyncEnabled(enabled)
-                    },
-                    onGrantPermissions = { viewModel.setPermissionDialogVisible(true) }
-                )
-
-                ClipboardFeaturesCard(
-                    isClipboardSyncEnabled = uiState.isClipboardSyncEnabled,
-                    onToggleClipboardSync = { enabled: Boolean ->
-                        viewModel.setClipboardSyncEnabled(enabled)
-                    },
-                    isContinueBrowsingEnabled = uiState.isContinueBrowsingEnabled,
-                    onToggleContinueBrowsing = { enabled: Boolean ->
-                        viewModel.setContinueBrowsingEnabled(enabled)
-                    },
-                    isContinueBrowsingToggleEnabled = true,
-                    continueBrowsingSubtitle = "Prompt to open shared links in browser",
-                    isKeepPreviousLinkEnabled = uiState.isKeepPreviousLinkEnabled,
-                    onToggleKeepPreviousLink = { enabled: Boolean ->
-                        viewModel.setKeepPreviousLinkEnabled(enabled)
-                    }
-                )
-
-                MediaSyncCard(
-                    isSendNowPlayingEnabled = uiState.isSendNowPlayingEnabled,
-                    onToggleSendNowPlaying = { enabled ->
-                        viewModel.setSendNowPlayingEnabled(enabled)
-                    },
-                    isMacMediaControlsEnabled = uiState.isMacMediaControlsEnabled,
-                    onToggleMacMediaControls = { enabled ->
-                        viewModel.setMacMediaControlsEnabled(enabled)
-                    }
-                )
-
-                SendNowPlayingCard(
-                    isSendNowPlayingEnabled = uiState.isQuickShareEnabled,
-                    onToggleSendNowPlaying = { enabled: Boolean ->
-                        viewModel.setQuickShareEnabled(context, enabled)
-                    },
-                    title = "Quick Share",
-                    subtitle = "Allow receiving files from nearby devices"
-                )
-            }
-        }
-
-        // Integration Section
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsCategoryTitle("Integration")
-            RoundedCardContainer {
-                SmartspacerCard(
-                    isSmartspacerShowWhenDisconnected = uiState.isSmartspacerShowWhenDisconnected,
-                    onToggleSmartspacerShowWhenDisconnected = { enabled: Boolean ->
-                        viewModel.setSmartspacerShowWhenDisconnected(enabled)
-                    }
-                )
-
-                val isEssentialsInstalled = try {
-                    context.packageManager.getPackageInfo("com.sameerasw.essentials", 0)
-                    true
-                } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
-                    false
-                }
-
-                if (isEssentialsInstalled) {
-                    SendNowPlayingCard(
-                        isSendNowPlayingEnabled = uiState.isEssentialsConnectionEnabled,
-                        onToggleSendNowPlaying = { enabled: Boolean ->
-                            viewModel.setEssentialsConnectionEnabled(enabled)
-                        },
-                        title = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.connect_to_essentials),
-                        subtitle = androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.connect_to_essentials_summary)
-                    )
-                } else {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = MaterialTheme.shapes.extraSmall,
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                        )
-                    ) {
-                        androidx.compose.material3.ListItem(
-                            colors = androidx.compose.material3.ListItemDefaults.colors(
-                                containerColor = androidx.compose.ui.graphics.Color.Transparent
-                            ),
-                            headlineContent = { Text(androidx.compose.ui.res.stringResource(com.sameerasw.airsync.R.string.download_essentials)) },
-                            supportingContent = {
-                                Text(
-                                    androidx.compose.ui.res.stringResource(
-                                        com.sameerasw.airsync.R.string.download_essentials_summary
-                                    )
-                                )
-                            },
-                            trailingContent = {
-                                Button(
-                                    onClick = {
-                                        val intent = android.content.Intent(
-                                            android.content.Intent.ACTION_VIEW,
-                                            android.net.Uri.parse("https://github.com/sameerasw/essentials/releases/latest")
-                                        )
-                                        intent.flags =
-                                            android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                                        context.startActivity(intent)
-                                    }
-                                ) {
-                                    Text("Download")
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        // Widget Section
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsCategoryTitle("Widget")
-            RoundedCardContainer {
-                com.sameerasw.airsync.presentation.ui.components.sliders.ConfigSliderItem(
-                    title = "Widget Transparency",
-                    value = uiState.widgetTransparency,
-                    onValueChange = { viewModel.setWidgetTransparency(it) }
-                )
-            }
-        }
-
-        // Connection Section
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsCategoryTitle("Connection")
-            RoundedCardContainer {
+            // Connection Section
+            SettingsCategory(title = "Connection") {
                 DeviceInfoCard(
                     deviceName = uiState.deviceNameInput,
                     localIp = deviceInfo.localIp,
@@ -367,17 +222,83 @@ fun SettingsView(
 
                 AirBridgeCard(context)
             }
-        }
 
-        // Developer Mode
-        AnimatedVisibility(
-            visible = uiState.isDeveloperModeVisible,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                SettingsCategoryTitle("Advanced")
-                RoundedCardContainer {
+            // Settings Categories Section
+            SettingsCategory(title = "Settings") {
+                IconToggleItem(
+                    title = "App",
+                    description = "Tab defaults, theme, and more",
+                    iconRes = R.drawable.rounded_devices_24,
+                    showToggle = false,
+                    onClick = {
+                        HapticUtil.performClick(haptics)
+                        onCategoryChange("App")
+                    }
+                )
+
+                IconToggleItem(
+                    title = "Notifications",
+                    description = "Notifications and per-app settings",
+                    iconRes = R.drawable.rounded_notifications_active_24,
+                    showToggle = false,
+                    onClick = {
+                        HapticUtil.performClick(haptics)
+                        onCategoryChange("Notifications")
+                    }
+                )
+
+                IconToggleItem(
+                    title = "Clipboard",
+                    description = "Clipboard and link settings",
+                    iconRes = R.drawable.ic_clipboard_24,
+                    showToggle = false,
+                    onClick = {
+                        HapticUtil.performClick(haptics)
+                        onCategoryChange("Clipboard")
+                    }
+                )
+
+                IconToggleItem(
+                    title = "Media and Files",
+                    description = "Media controls, Quick Share, and more",
+                    iconRes = R.drawable.rounded_folder_managed_24,
+                    showToggle = false,
+                    onClick = {
+                        HapticUtil.performClick(haptics)
+                        onCategoryChange("Media and Files")
+                    }
+                )
+
+                IconToggleItem(
+                    title = "Integrations",
+                    description = "Connect with external apps",
+                    iconRes = R.drawable.rounded_extension_24,
+                    showToggle = false,
+                    onClick = {
+                        HapticUtil.performClick(haptics)
+                        onCategoryChange("Integrations")
+                    }
+                )
+
+                IconToggleItem(
+                    title = "Widget",
+                    description = "Home screen widget customization",
+                    iconRes = R.drawable.rounded_web_24,
+                    showToggle = false,
+                    onClick = {
+                        HapticUtil.performClick(haptics)
+                        onCategoryChange("Widget")
+                    }
+                )
+            }
+
+            // Advanced / Developer Section
+            AnimatedVisibility(
+                visible = uiState.isDeveloperModeVisible,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                SettingsCategory(title = "Advanced") {
                     DeveloperModeCard(
                         isDeveloperMode = uiState.isDeveloperMode,
                         onToggleDeveloperMode = { viewModel.setDeveloperMode(it) },
@@ -468,13 +389,254 @@ fun SettingsView(
                     )
                 }
             }
+
+            AboutSection(
+                onAvatarLongClick = onToggleDeveloperMode
+            )
+        } else {
+            // Sub-Settings category view
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.Start,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                // Category header animation
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(headerHeight),
+                    contentAlignment = Alignment.Center
+                ) {
+                    when (activeCategory) {
+                        "Notifications" -> NotifyAnimation(
+                            isPlus = uiState.isConnected && (uiState.lastConnectedDevice?.isPlus == true),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(headerHeight)
+                        )
+                        "Clipboard" -> ClipAnimation(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(headerHeight)
+                        )
+                        "Media and Files" -> FileAnimation(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(headerHeight)
+                        )
+                        else -> AirSyncLoadingAnimation(
+                            isPlus = uiState.isConnected && (uiState.lastConnectedDevice?.isPlus == true),
+                            modifier = Modifier.size(headerHeight)
+                        )
+                    }
+                }
+
+                Text(
+                    text = activeCategory,
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+
+                RoundedCardContainer {
+                    when (activeCategory) {
+                        "App" -> {
+                            DefaultTabCard(
+                                currentDefaultTab = uiState.defaultTab,
+                                onDefaultTabChange = { tab -> viewModel.setDefaultTab(tab) }
+                            )
+
+                            IconToggleItem(
+                                title = stringResource(R.string.label_use_blur),
+                                description = when {
+                                    com.sameerasw.airsync.utils.DeviceInfoUtil.isBlurProblematicDevice() ->
+                                        stringResource(R.string.subtitle_blur_disabled_samsung)
+
+                                    uiState.isPowerSaveMode && uiState.isBlurSettingEnabled ->
+                                        stringResource(R.string.subtitle_blur_disabled_power_save)
+
+                                    else -> stringResource(R.string.subtitle_use_blur)
+                                },
+                                iconRes = R.drawable.rounded_blur_on_24,
+                                isChecked = uiState.isBlurSettingEnabled,
+                                onCheckedChange = { enabled: Boolean ->
+                                    viewModel.setUseBlurEnabled(enabled, context)
+                                },
+                                enabled = !com.sameerasw.airsync.utils.DeviceInfoUtil.isBlurProblematicDevice()
+                            )
+
+                            IconToggleItem(
+                                title = stringResource(R.string.label_pitch_black_theme),
+                                description = stringResource(R.string.subtitle_pitch_black_theme),
+                                iconRes = R.drawable.rounded_dark_mode_24,
+                                isChecked = uiState.isPitchBlackThemeEnabled,
+                                onCheckedChange = { enabled: Boolean ->
+                                    viewModel.setPitchBlackThemeEnabled(enabled)
+                                }
+                            )
+
+                            IconToggleItem(
+                                title = stringResource(R.string.label_notify_on_crash),
+                                description = stringResource(R.string.subtitle_notify_on_crash),
+                                iconRes = R.drawable.rounded_bug_report_24,
+                                isChecked = uiState.isNotifyOnCrashEnabled,
+                                onCheckedChange = { enabled: Boolean ->
+                                    viewModel.setNotifyOnCrashEnabled(enabled)
+                                }
+                            )
+                        }
+                        "Notifications" -> {
+                            NotificationSyncCard(
+                                isNotificationEnabled = uiState.isNotificationEnabled,
+                                isNotificationSyncEnabled = uiState.isNotificationSyncEnabled,
+                                onToggleSync = { enabled ->
+                                    viewModel.setNotificationSyncEnabled(enabled)
+                                },
+                                onGrantPermissions = { viewModel.setPermissionDialogVisible(true) }
+                            )
+
+                            if (uiState.isNotificationSyncEnabled && uiState.isNotificationEnabled) {
+                                IconToggleItem(
+                                    title = stringResource(R.string.action_select_apps),
+                                    description = stringResource(R.string.subtitle_to_be_notified),
+                                    iconRes = R.drawable.rounded_notification_settings_24,
+                                    showToggle = false,
+                                    onClick = {
+                                        HapticUtil.performClick(haptics)
+                                        viewModel.loadNotificationApps(context)
+                                        showAppSelectionSheet = true
+                                    }
+                                )
+                            }
+                        }
+                        "Clipboard" -> {
+                            ClipboardFeaturesCard(
+                                isClipboardSyncEnabled = uiState.isClipboardSyncEnabled,
+                                onToggleClipboardSync = { enabled: Boolean ->
+                                    viewModel.setClipboardSyncEnabled(enabled)
+                                },
+                                isContinueBrowsingEnabled = uiState.isContinueBrowsingEnabled,
+                                onToggleContinueBrowsing = { enabled: Boolean ->
+                                    viewModel.setContinueBrowsingEnabled(enabled)
+                                },
+                                isContinueBrowsingToggleEnabled = true,
+                                continueBrowsingSubtitle = "Prompt to open shared links in browser",
+                                isKeepPreviousLinkEnabled = uiState.isKeepPreviousLinkEnabled,
+                                onToggleKeepPreviousLink = { enabled: Boolean ->
+                                    viewModel.setKeepPreviousLinkEnabled(enabled)
+                                }
+                            )
+                        }
+                        "Media and Files" -> {
+                            MediaSyncCard(
+                                isSendNowPlayingEnabled = uiState.isSendNowPlayingEnabled,
+                                onToggleSendNowPlaying = { enabled ->
+                                    viewModel.setSendNowPlayingEnabled(enabled)
+                                },
+                                isMacMediaControlsEnabled = uiState.isMacMediaControlsEnabled,
+                                onToggleMacMediaControls = { enabled ->
+                                    viewModel.setMacMediaControlsEnabled(enabled)
+                                }
+                            )
+
+                            IconToggleItem(
+                                title = "Quick Share",
+                                description = "Allow receiving files from nearby devices",
+                                iconRes = R.drawable.quick_share,
+                                isChecked = uiState.isQuickShareEnabled,
+                                onCheckedChange = { enabled: Boolean ->
+                                    viewModel.setQuickShareEnabled(context, enabled)
+                                }
+                            )
+
+                            IconToggleItem(
+                                title = stringResource(R.string.label_file_access),
+                                description = stringResource(R.string.subtitle_file_access),
+                                iconRes = R.drawable.rounded_folder_managed_24,
+                                isChecked = uiState.isFileAccessEnabled,
+                                onCheckedChange = { enabled: Boolean ->
+                                    viewModel.setFileAccessEnabled(context, enabled)
+                                }
+                            )
+                        }
+                        "Integrations" -> {
+                            SmartspacerCard(
+                                isSmartspacerShowWhenDisconnected = uiState.isSmartspacerShowWhenDisconnected,
+                                onToggleSmartspacerShowWhenDisconnected = { enabled: Boolean ->
+                                    viewModel.setSmartspacerShowWhenDisconnected(enabled)
+                                }
+                            )
+
+                            val isEssentialsInstalled = try {
+                                context.packageManager.getPackageInfo("com.sameerasw.essentials", 0)
+                                true
+                            } catch (e: Exception) {
+                                false
+                            }
+
+                            if (isEssentialsInstalled) {
+                                IconToggleItem(
+                                    title = stringResource(R.string.connect_to_essentials),
+                                    description = stringResource(R.string.connect_to_essentials_summary),
+                                    iconRes = R.drawable.essentials_icon,
+                                    isChecked = uiState.isEssentialsConnectionEnabled,
+                                    onCheckedChange = { enabled: Boolean ->
+                                        viewModel.setEssentialsConnectionEnabled(enabled)
+                                    }
+                                )
+                            } else {
+                                ListItem(
+                                    colors = ListItemDefaults.colors(
+                                        containerColor = androidx.compose.ui.graphics.Color.Transparent
+                                    ),
+                                    headlineContent = { Text(stringResource(R.string.download_essentials)) },
+                                    supportingContent = {
+                                        Text(stringResource(R.string.download_essentials_summary))
+                                    },
+                                    trailingContent = {
+                                        Button(
+                                            onClick = {
+                                                HapticUtil.performClick(haptics)
+                                                val intent = android.content.Intent(
+                                                    android.content.Intent.ACTION_VIEW,
+                                                    android.net.Uri.parse("https://github.com/sameerasw/essentials/releases/latest")
+                                                )
+                                                intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                                                context.startActivity(intent)
+                                            }
+                                        ) {
+                                            Text("Download")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                        "Widget" -> {
+                            com.sameerasw.airsync.presentation.ui.components.sliders.ConfigSliderItem(
+                                title = "Widget Transparency",
+                                value = uiState.widgetTransparency,
+                                onValueChange = { viewModel.setWidgetTransparency(it) }
+                            )
+                        }
+                    }
+                }
+            }
         }
 
-        AboutSection(
-            onAvatarLongClick = onToggleDeveloperMode
-        )
-
         Spacer(modifier = Modifier.height(180.dp))
+    }
+
+    if (showAppSelectionSheet) {
+        val apps by viewModel.notificationApps.collectAsState()
+        AppSelectionSheet(
+            onDismissRequest = { showAppSelectionSheet = false },
+            apps = apps,
+            onAppToggle = { pkg, enabled ->
+                viewModel.toggleNotificationApp(context, pkg, enabled)
+            },
+            onSaveAll = { updatedList ->
+                viewModel.saveAllNotificationApps(context, updatedList)
+            },
+            isLoading = apps.isEmpty()
+        )
     }
 }
 
@@ -488,3 +650,15 @@ fun SettingsCategoryTitle(title: String) {
     )
 }
 
+@Composable
+fun SettingsCategory(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SettingsCategoryTitle(title)
+        RoundedCardContainer {
+            content()
+        }
+    }
+}

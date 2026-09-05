@@ -1,5 +1,3 @@
-import org.gradle.api.JavaVersion.VERSION_11
-import org.gradle.api.JavaVersion.VERSION_17
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -11,14 +9,13 @@ plugins {
 
 android {
     namespace = "com.sameerasw.airsync"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.sameerasw.airsync"
         minSdk = 30
-        targetSdk = 36
-        versionCode = 27
-        versionName = "3.1.0"
+        versionCode = 29
+        versionName = "4.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -47,25 +44,28 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = VERSION_11
-        targetCompatibility = VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
-kotlin {
-    compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_17)
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_21)
+        }
     }
-}
     buildFeatures {
         compose = true
         buildConfig = true
     }
+    compileSdkMinor = 0
 
     defaultConfig {
-        buildConfigField("String", "MIN_MAC_APP_VERSION", "\"3.0.0\"")
+        targetSdk = 37
+        buildConfigField("String", "MIN_MAC_APP_VERSION", "\"4.0.0\"")
     }
 }
 
 dependencies {
+    implementation(libs.exceptionreport)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -85,9 +85,10 @@ dependencies {
     // Android 12+ SplashScreen API with backward compatibility attributes
     implementation("androidx.core:core-splashscreen:1.0.1")
 
-    implementation ("androidx.compose.material3:material3:1.5.0-alpha10")
+    implementation("androidx.compose.material3:material3:1.5.0-alpha10")
     implementation("androidx.compose.material:material-icons-core:1.7.8")
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    implementation("com.airbnb.android:lottie-compose:6.4.0")
 
     // DataStore for state persistence
     implementation("androidx.datastore:datastore-preferences:1.1.1")
@@ -138,7 +139,6 @@ dependencies {
     // Google Play Review
     implementation(libs.play.review)
     implementation(libs.play.review.ktx)
-    implementation(libs.sentry.android)
 
     // Coil for image and GIF loading
     implementation("io.coil-kt:coil-compose:2.6.0")
@@ -154,6 +154,14 @@ dependencies {
 
     implementation(libs.wire.runtime)
     implementation(libs.bouncycastle)
+
+    // Ktor Server for WebDAV
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.host.common)
+    implementation(libs.ktor.server.status.pages)
+    implementation(libs.ktor.server.content.negotiation)
+    implementation(libs.ktor.serialization.gson)
 }
 
 wire {

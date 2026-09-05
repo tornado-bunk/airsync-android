@@ -101,9 +101,7 @@ interface AirSyncRepository {
     suspend fun setDefaultTab(tab: String)
     fun getDefaultTab(): Flow<String>
 
-    // Sentry reporting settings
-    suspend fun setSentryReportingEnabled(enabled: Boolean)
-    fun getSentryReportingEnabled(): Flow<Boolean>
+
 
     // Widget specific settings
     suspend fun setWidgetTransparency(alpha: Float)
@@ -132,4 +130,11 @@ interface AirSyncRepository {
     // Quick Share (receiving)
     suspend fun setQuickShareEnabled(enabled: Boolean)
     fun isQuickShareEnabled(): Flow<Boolean>
+
+    // File Access (WebDAV Server)
+    suspend fun setFileAccessEnabled(enabled: Boolean)
+    fun isFileAccessEnabled(): Flow<Boolean>
+
+    suspend fun setNotifyOnCrashEnabled(enabled: Boolean)
+    fun getNotifyOnCrashEnabled(): Flow<Boolean>
 }

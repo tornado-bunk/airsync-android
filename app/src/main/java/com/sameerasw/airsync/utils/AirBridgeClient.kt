@@ -123,6 +123,7 @@ object AirBridgeClient {
                     setState(State.DISCONNECTED, "AirBridge disabled in settings")
                     return@launch
                 }
+                ds.setUserManuallyDisconnected(false)
                 val relayUrl = ds.getAirBridgeRelayUrl().first()
                 val pairingId = ds.getAirBridgePairingId().first()
                 val secretRaw = ds.getAirBridgeSecret().first()

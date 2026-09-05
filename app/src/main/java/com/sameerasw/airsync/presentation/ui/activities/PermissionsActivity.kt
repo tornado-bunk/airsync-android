@@ -29,7 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import com.sameerasw.airsync.presentation.ui.screens.PermissionsScreen
 import com.sameerasw.airsync.ui.theme.AirSyncTheme
-import com.sameerasw.airsync.presentation.viewmodel.AirSyncViewModel
 import com.sameerasw.airsync.utils.PermissionUtil
 
 class PermissionsActivity : ComponentActivity() {
@@ -48,6 +47,18 @@ class PermissionsActivity : ComponentActivity() {
     ) { refreshUI() }
 
     private val phonePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { refreshUI() }
+
+    private val bluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { refreshUI() }
+
+    private val localNetworkPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { refreshUI() }
+
+    private val answerCallsPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { refreshUI() }
 
@@ -120,6 +131,15 @@ class PermissionsActivity : ComponentActivity() {
                         onRequestPhonePermission = {
                             requestPhonePermission()
                         },
+                        onRequestBluetoothPermission = {
+                            requestBluetoothPermission()
+                        },
+                        onRequestLocalNetworkPermission = {
+                            requestLocalNetworkPermission()
+                        },
+                        onRequestAnswerCallsPermission = {
+                            requestAnswerCallsPermission()
+                        },
                         refreshTrigger = refreshCounter
                     )
                 }
@@ -154,6 +174,36 @@ class PermissionsActivity : ComponentActivity() {
     private fun requestPhonePermission() {
         if (!PermissionUtil.isPhoneStatePermissionGranted(this)) {
             phonePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+        }
+    }
+
+    private fun requestBluetoothPermission() {
+        if (!PermissionUtil.isBluetoothPermissionsGranted(this)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                bluetoothPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.BLUETOOTH_ADVERTISE
+                    )
+                )
+            }
+        }
+    }
+
+    private fun requestLocalNetworkPermission() {
+        if (Build.VERSION.SDK_INT >= 37) {
+            if (!PermissionUtil.isLocalNetworkPermissionGranted(this)) {
+                localNetworkPermissionLauncher.launch("android.permission.ACCESS_LOCAL_NETWORK")
+            }
+        }
+    }
+
+    private fun requestAnswerCallsPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (!PermissionUtil.isAnswerCallsPermissionGranted(this)) {
+                answerCallsPermissionLauncher.launch(Manifest.permission.ANSWER_PHONE_CALLS)
+            }
         }
     }
 

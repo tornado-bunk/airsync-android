@@ -12,11 +12,21 @@
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
 
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_WALLPAPER_INTERNAL" />
-
 
 
     <!-- Permission for downloading updates -->
@@ -38,6 +48,7 @@
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
 
     <uses-permission android:name="com.sameerasw.permission.ESSENTIALS_AIRSYNC_BRIDGE" />
 
@@ -48,21 +59,20 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.AirSync"
-        android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="36">
 
-        <!-- Disable Sentry auto-init as it's handled manually in AirSyncApp -->
-        <meta-data android:name="io.sentry.auto-init" android:value="false" />
+
 
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.AirSync.Splash"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+            android:theme="@style/Theme.AirSync.Splash">
             <!-- Main launcher intent filter -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -78,29 +88,30 @@
             <!-- Deep link intent filter for QR codes -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
+
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+
                 <data android:scheme="airsync" />
             </intent-filter>
 
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
             </intent-filter>
-            
+
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
 
 
-
         <activity
             android:name=".presentation.ui.activities.ClipboardActionActivity"
-            android:theme="@style/Theme.AirSync.Transparent"
-            android:exported="true"
             android:excludeFromRecents="true"
+            android:exported="true"
             android:noHistory="true"
-            android:taskAffinity="">
+            android:taskAffinity=""
+            android:theme="@style/Theme.AirSync.Transparent">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -122,8 +133,8 @@
             android:name=".presentation.ui.activities.QRScannerActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.AirSync"
-            android:screenOrientation="portrait">
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AirSync">
             <!-- Allow external apps to launch the scanner -->
             <intent-filter>
                 <action android:name="com.sameerasw.airsync.SCAN_QR" />
@@ -139,11 +150,12 @@
             android:theme="@style/Theme.AirSync" />
 
 
+
+
         <service
             android:name=".service.MacMediaPlayerService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice">
-        </service>
+            android:foregroundServiceType="connectedDevice"></service>
 
         <!-- Quick Settings Tile Service -->
         <service
@@ -168,7 +180,6 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
-
 
 
         <!-- Wake-up Service for receiving reconnection requests from Mac -->
@@ -225,8 +236,8 @@
         <provider
             android:name=".smartspacer.AirSyncDeviceTarget"
             android:authorities="${applicationId}.target.airsync_device"
-            android:permission="com.kieronquinn.app.smartspacer.permission.ACCESS_SMARTSPACER_TARGETS"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.kieronquinn.app.smartspacer.permission.ACCESS_SMARTSPACER_TARGETS">
             <intent-filter>
                 <action android:name="com.kieronquinn.app.smartspacer.TARGET" />
             </intent-filter>
@@ -251,6 +262,22 @@
             </intent-filter>
         </receiver>
 
+        <!-- Crash Reporting System Components -->
+        <receiver
+            android:name=".crash.CrashNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.sameerasw.airsync.action.DISMISS_CRASH_NOTIFICATION" />
+            </intent-filter>
+        </receiver>
+
+        <activity
+            android:name=".crash.CrashReportActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AirSync.Transparent"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
 
     </application>
 
@@ -261,8 +288,9 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
-            <package android:name="com.google.ar.lens" />
-            <package android:name="com.sameerasw.essentials" />
+
+        <package android:name="com.google.ar.lens" />
+        <package android:name="com.sameerasw.essentials" />
     </queries>
 
 </manifest>

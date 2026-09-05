@@ -109,6 +109,7 @@ object WebSocketMessageHandler {
                 "refreshAdbPorts" -> handleRefreshAdbPorts(context)
                 "browseLs" -> handleBrowseLs(context, data)
                 "startQuickShare" -> handleStartQuickShare(context)
+                "callControl" -> handleCallControl(context, data)
                 else -> {
                     Log.w(TAG, "Unknown message type: $type")
                 }
@@ -234,7 +235,7 @@ object WebSocketMessageHandler {
     }
 
     /**
-     * Handles media control commands (play/pause, next, previous, like).
+     * Handles media control commands (play/pause, seek, next, previous, like).
      * Sends a response back to Mac and updates local media state after a short delay.
      */
     private fun handleMediaControl(context: Context, data: JSONObject?) {
@@ -263,6 +264,13 @@ object WebSocketMessageHandler {
                 "pause" -> {
                     success = MediaControlUtil.playPause(context)
                     message = if (success) "Playback paused" else "Failed to pause playback"
+                }
+
+                "seekTo" -> {
+                    val positionMs = data.optLong("positionMs", -1L)
+                    success = positionMs >= 0L && MediaControlUtil.seekTo(context, positionMs)
+                    message =
+                        if (success) "Seeked to ${positionMs}ms" else "Failed to seek playback"
                 }
 
                 "next" -> {
@@ -314,6 +322,7 @@ object WebSocketMessageHandler {
                 // For track skip actions (next/previous), add a delay to allow media player to update
                 CoroutineScope(Dispatchers.IO).launch {
                     val delayMs = when (action) {
+                        "seekTo" -> 650L
                         "next", "previous" -> 1200L
                         else -> 400L // smaller delay for like/others
                     }
@@ -324,6 +333,28 @@ object WebSocketMessageHandler {
         } catch (e: Exception) {
             Log.e(TAG, "Error handling media control: ${e.message}")
             sendMediaControlResponse("unknown", false, "Error: ${e.message}")
+        }
+    }
+
+    /**
+     * Handles call control actions (accept, end, decline) from the Mac.
+     */
+    private fun handleCallControl(context: Context, data: JSONObject?) {
+        try {
+            if (data == null) {
+                Log.e(TAG, "Call control data is null")
+                return
+            }
+
+            val action = data.optString("action")
+            Log.d(TAG, "Handling call control action: $action")
+            when (action) {
+                "accept" -> CallControlUtil.acceptCall(context)
+                "end", "decline" -> CallControlUtil.endCall(context)
+                else -> Log.w(TAG, "Unknown call control action: $action")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling call control command: ${e.message}")
         }
     }
 
@@ -416,10 +447,13 @@ object WebSocketMessageHandler {
 
     private fun handlePing(context: Context) {
         try {
-            // Respond with lightweight pong for keepalive (works for both LAN and Relay)
-            CoroutineScope(Dispatchers.IO).launch {
-                WebSocketUtil.sendMessage("{\"type\":\"pong\"}")
-            }
+            // Reply immediately with lightweight pong message to keep session active
+            val pongJson = "{\"type\":\"pong\",\"data\":{}}"
+            WebSocketUtil.sendMessage(pongJson)
+
+            // Respond to ping with current device status to keep connection alive
+            // We must force sync here because the server expects a response to every ping
+            SyncManager.checkAndSyncDeviceStatus(context, forceSync = true)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling ping: ${e.message}")
         }
@@ -696,8 +730,7 @@ object WebSocketMessageHandler {
 
     private fun handleDisconnectRequest(context: Context) {
         try {
-            // Mark as intentional disconnect to prevent auto-reconnect
-            kotlinx.coroutines.runBlocking {
+            CoroutineScope(Dispatchers.IO).launch {
                 try {
                     val dataStoreManager = DataStoreManager(context)
                     dataStoreManager.setUserManuallyDisconnected(true)
@@ -742,6 +775,10 @@ object WebSocketMessageHandler {
                 if (music?.has("albumArt") == true) music.optString("albumArt", "") else null
 
             val likeStatus = music?.optString("likeStatus", "none") ?: "none"
+            val elapsedTime = ((music?.optDouble("elapsedTime", 0.0) ?: 0.0) * 1000).toLong()
+            val duration = ((music?.optDouble("duration", 0.0) ?: 0.0) * 1000).toLong()
+            val timestamp = music?.optString("timestamp")
+            val playbackRate = music?.optDouble("playbackRate", 1.0) ?: 1.0
 
             val isPaired = data.optBoolean("isPaired", true)
 
@@ -756,6 +793,10 @@ object WebSocketMessageHandler {
             // Update the Mac device status manager with all media info
             MacDeviceStatusManager.updateStatus(
                 context = context,
+                name = data.optString(
+                    "name",
+                    MacDeviceStatusManager.macDeviceStatus.value?.name ?: "Unknown"
+                ),
                 batteryLevel = batteryLevel,
                 isCharging = isCharging,
                 isPaired = isPaired,
@@ -765,7 +806,11 @@ object WebSocketMessageHandler {
                 volume = volume,
                 isMuted = isMuted,
                 albumArt = albumArt,
-                likeStatus = likeStatus
+                likeStatus = likeStatus,
+                elapsedTime = elapsedTime,
+                duration = duration,
+                timestamp = timestamp,
+                playbackRate = playbackRate
             )
 
             // Persist a lightweight snapshot for widget consumption and throttle widget refresh
@@ -1147,7 +1192,7 @@ object WebSocketMessageHandler {
     private fun handleRefreshAdbPorts(context: Context) {
         Log.d(TAG, "Request to refresh ADB ports received. Restarting discovery...")
         com.sameerasw.airsync.AdbDiscoveryHolder.restartDiscovery(context)
-        
+
         CoroutineScope(Dispatchers.IO).launch {
             delay(2500)
             Log.d(TAG, "Sending refreshed device info with ADB ports after delay")
@@ -1184,8 +1229,12 @@ object WebSocketMessageHandler {
                 }
 
                 Log.d(TAG, "Triggering Quick Share receiving mode via WebSocket")
-                val intent = Intent(context, com.sameerasw.airsync.quickshare.QuickShareService::class.java).apply {
-                    action = com.sameerasw.airsync.quickshare.QuickShareService.ACTION_START_DISCOVERY
+                val intent = Intent(
+                    context,
+                    com.sameerasw.airsync.quickshare.QuickShareService::class.java
+                ).apply {
+                    action =
+                        com.sameerasw.airsync.quickshare.QuickShareService.ACTION_START_DISCOVERY
                 }
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
@@ -1198,4 +1247,3 @@ object WebSocketMessageHandler {
         }
     }
 }
-

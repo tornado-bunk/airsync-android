@@ -13,14 +13,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.background
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
+import com.sameerasw.airsync.R
 import com.sameerasw.airsync.utils.HapticUtil
 
 @Composable
@@ -41,51 +39,43 @@ fun DeveloperModeCard(
     onExportData: () -> Unit,
     onImportData: () -> Unit,
     onResetOnboarding: () -> Unit,
-    // Icon Sync Parameters
     isIconSyncLoading: Boolean,
     iconSyncMessage: String,
     onManualSyncIcons: () -> Unit,
     onClearIconSyncMessage: () -> Unit,
-    isConnected: Boolean
+    isConnected: Boolean,
+    modifier: Modifier = Modifier
 ) {
     val haptics = LocalHapticFeedback.current
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraSmall,
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+            containerColor = MaterialTheme.colorScheme.surfaceBright
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Developer Mode", style = MaterialTheme.typography.titleMedium)
-                Switch(
-                    checked = isDeveloperMode,
-                    onCheckedChange = { enabled ->
-                        if (enabled) HapticUtil.performToggleOn(haptics) else HapticUtil.performToggleOff(
-                            haptics
-                        )
-                        onToggleDeveloperMode(enabled)
-                    }
-                )
-            }
+        Column(modifier = Modifier.fillMaxWidth()) {
+            IconToggleItem(
+                iconRes = R.drawable.rounded_troubleshoot_24,
+                title = "Developer Mode",
+                isChecked = isDeveloperMode,
+                onCheckedChange = onToggleDeveloperMode
+            )
 
             if (isDeveloperMode) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    "Test Functions",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "Test Functions",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
                             HapticUtil.performClick(haptics)
@@ -154,7 +144,6 @@ fun DeveloperModeCard(
                         Text("Reset Onboarding")
                     }
 
-                    // Consolidated Icon Sync Section
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         "Icons",
@@ -219,7 +208,7 @@ fun DeveloperModeCard(
                             }
                         }
                     }
-                    // Sentry section
+
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         "Crash Reporting",

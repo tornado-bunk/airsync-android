@@ -25,14 +25,16 @@ import com.sameerasw.airsync.utils.PermissionUtil
 import com.sameerasw.airsync.utils.ServiceManager
 import com.sameerasw.airsync.utils.ShortcutUtil
 import com.sameerasw.airsync.utils.SyncManager
-import com.sameerasw.airsync.utils.UDPDiscoveryManager
+import com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator
 import com.sameerasw.airsync.utils.WebSocketUtil
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class AirSyncViewModel(
     private val repository: AirSyncRepository
@@ -55,8 +57,8 @@ class AirSyncViewModel(
     // Network-aware device connections state
     private val _networkDevices = MutableStateFlow<List<NetworkDeviceConnection>>(emptyList())
 
-    // Discovered devices from UDP
-    val discoveredDevices: StateFlow<List<DiscoveredDevice>> = UDPDiscoveryManager.discoveredDevices
+    // Discovered devices from Orchestrator
+    val discoveredDevices: StateFlow<List<DiscoveredDevice>> = DiscoveryOrchestrator.discoveredDevices
 
     // Notes Role state
     private val _stylusMode = MutableStateFlow(false)
@@ -97,32 +99,50 @@ class AirSyncViewModel(
         }
     }
 
-    // Connection status listener for WebSocket updates
-    private val connectionStatusListener: (Boolean) -> Unit = { isConnected ->
-        lastWebSocketConnected = isConnected
+    private val connectionStatusListener: (Boolean) -> Unit = { isWsConnected ->
+        lastWebSocketConnected = isWsConnected
         updateUnifiedConnectionState()
     }
 
     private fun updateUnifiedConnectionState() {
         viewModelScope.launch {
+            val isWsConnected = lastWebSocketConnected || WebSocketUtil.isWifiConnected()
+            val isBleConnected =
+                _uiState.value.bleConnectionState == com.sameerasw.airsync.data.ble.BleGattServer.BleConnectionState.AUTHENTICATED
             val relayConnected = lastRelayState == AirBridgeClient.State.RELAY_ACTIVE
             val relayConnecting = lastRelayState == AirBridgeClient.State.CONNECTING ||
                 lastRelayState == AirBridgeClient.State.REGISTERING ||
                 lastRelayState == AirBridgeClient.State.WAITING_FOR_PEER
-            val unifiedConnected = lastWebSocketConnected || relayConnected
+            val unifiedConnected = isWsConnected || relayConnected || isBleConnected
             val unifiedConnecting = !unifiedConnected && (WebSocketUtil.isConnecting() || relayConnecting)
+
+            val deviceToShow = if (unifiedConnected) {
+                val networkAwareDevice = getNetworkAwareLastConnectedDevice()
+                val storedDevice = repository.getLastConnectedDevice().first()
+                networkAwareDevice ?: storedDevice
+            } else {
+                _uiState.value.lastConnectedDevice
+            }
+
+            val activeIp = if (isWsConnected) WebSocketUtil.currentIpAddress else null
+            if (isWsConnected && activeIp != null) {
+                repository.saveIpAddress(activeIp)
+            }
+            val savedIp = if (isWsConnected && activeIp != null) activeIp else repository.getIpAddress().first()
 
             _uiState.value = _uiState.value.copy(
                 isConnected = unifiedConnected,
                 isConnecting = unifiedConnecting,
-                isRelayConnection = relayConnected && !lastWebSocketConnected,
+                isRelayConnection = relayConnected && !isWsConnected,
                 response = when {
                     unifiedConnected -> "Connected successfully!"
                     unifiedConnecting -> "Connecting..."
                     else -> "Disconnected"
                 },
-                activeIp = if (lastWebSocketConnected) WebSocketUtil.currentIpAddress else null,
-                macDeviceStatus = if (unifiedConnected) _uiState.value.macDeviceStatus else null
+                ipAddress = savedIp,
+                activeIp = activeIp,
+                macDeviceStatus = if (unifiedConnected) _uiState.value.macDeviceStatus else null,
+                lastConnectedDevice = deviceToShow
             )
 
             if (unifiedConnected && !lastUnifiedConnected) {
@@ -148,6 +168,42 @@ class AirSyncViewModel(
     }
 
     init {
+        // Initialize current connection state immediately
+        val isWsConnected = WebSocketUtil.isConnected()
+        val isBleConnected = com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()?.isAuthenticated == true
+        val isGlobalConnected = isWsConnected || isBleConnected
+
+        val storedDevice = try {
+            kotlinx.coroutines.runBlocking { repository.getLastConnectedDevice().first() }
+        } catch (_: Exception) {
+            null
+        }
+
+        val activeIp = if (isWsConnected) WebSocketUtil.currentIpAddress else null
+
+        val initialIp = if (isWsConnected && activeIp != null) {
+            runBlocking {
+                repository.saveIpAddress(activeIp)
+                activeIp
+            }
+        } else {
+            null
+        }
+
+        val savedIp = initialIp ?: try {
+            kotlinx.coroutines.runBlocking { repository.getIpAddress().first() }
+        } catch (_: Exception) {
+            ""
+        }
+
+        _uiState.value = _uiState.value.copy(
+            isConnected = isGlobalConnected,
+            ipAddress = savedIp,
+            activeIp = activeIp,
+            macDeviceStatus = if (isGlobalConnected) MacDeviceStatusManager.macDeviceStatus.value else null,
+            lastConnectedDevice = storedDevice
+        )
+
         // Register for WebSocket connection status updates
         WebSocketUtil.registerConnectionStatusListener(connectionStatusListener)
         try {
@@ -181,12 +237,7 @@ class AirSyncViewModel(
             }
         }
 
-        // Observe sentry reporting preference
-        viewModelScope.launch {
-            repository.getSentryReportingEnabled().collect { enabled ->
-                _uiState.value = _uiState.value.copy(isSentryReportingEnabled = enabled)
-            }
-        }
+
 
         // Observe widget transparency preference
         viewModelScope.launch {
@@ -206,6 +257,43 @@ class AirSyncViewModel(
         viewModelScope.launch {
             repository.isQuickShareEnabled().collect { enabled ->
                 _uiState.value = _uiState.value.copy(isQuickShareEnabled = enabled)
+            }
+        }
+
+        // Observe File Access preference
+        viewModelScope.launch {
+            repository.isFileAccessEnabled().collect { enabled ->
+                _uiState.value = _uiState.value.copy(isFileAccessEnabled = enabled)
+            }
+        }
+
+        // Observe Notify on Crash preference
+        viewModelScope.launch {
+            repository.getNotifyOnCrashEnabled().collect { enabled ->
+                _uiState.value = _uiState.value.copy(isNotifyOnCrashEnabled = enabled)
+            }
+        }
+
+        // Observe BLE connection status
+        viewModelScope.launch {
+            com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()?.connectionState?.collect { state ->
+                Log.d("AirSyncViewModel", "BLE connection state changed: $state")
+                val isBleAuthenticated =
+                    state == com.sameerasw.airsync.data.ble.BleGattServer.BleConnectionState.AUTHENTICATED
+                val isWsConnected = WebSocketUtil.isConnected()
+
+                _uiState.value = _uiState.value.copy(
+                    bleConnectionState = state,
+                    isConnected = isWsConnected || isBleAuthenticated
+                )
+
+                if (isBleAuthenticated && !isWsConnected) {
+                    // Refresh shortcuts and other side effects if this is the only connection
+                    appContext?.let { ctx ->
+                        ShortcutUtil.refreshShortcuts(ctx, true)
+                    }
+                    updateRatingPromptDisplay()
+                }
             }
         }
     }
@@ -308,12 +396,12 @@ class AirSyncViewModel(
             val isDeviceDiscoveryEnabled = repository.getDeviceDiscoveryEnabled().first()
             val isBlurEnabledSetting = repository.getUseBlurEnabled().first()
             val isPitchBlackThemeEnabled = repository.getPitchBlackThemeEnabled().first()
-            val isSentryReportingEnabled = repository.getSentryReportingEnabled().first()
             val isFirstRun = repository.getFirstRun().first()
             val isPowerSaveMode = DeviceInfoUtil.isPowerSaveMode(context)
             val isBlurProblematic = DeviceInfoUtil.isBlurProblematicDevice()
             val isQuickShareEnabled = repository.isQuickShareEnabled().first()
-            
+            val isNotifyOnCrashEnabled = repository.getNotifyOnCrashEnabled().first()
+
             // Replicate Essentials logic for initial state
             val isBlurEnabled = isBlurEnabledSetting && !isPowerSaveMode && !isBlurProblematic
 
@@ -381,9 +469,9 @@ class AirSyncViewModel(
                 isPowerSaveMode = isPowerSaveMode,
                 isPitchBlackThemeEnabled = isPitchBlackThemeEnabled,
                 isBlurEnabled = isBlurEnabled,
-                isSentryReportingEnabled = isSentryReportingEnabled,
                 isOnboardingCompleted = !isFirstRun,
-                isQuickShareEnabled = isQuickShareEnabled
+                isQuickShareEnabled = isQuickShareEnabled,
+                isNotifyOnCrashEnabled = isNotifyOnCrashEnabled
             )
             lastUnifiedConnected = currentlyConnected
 
@@ -418,15 +506,15 @@ class AirSyncViewModel(
             // Start observing device changes for real-time updates
             startObservingDeviceChanges(context)
 
-            // Register power save receiver
-            context.registerReceiver(
+            // Register power save receiver on application context to avoid leaking Activity context
+            context.applicationContext.registerReceiver(
                 powerSaveReceiver,
                 IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
             )
 
             // Start AirSync Service conditionally
             ServiceManager.updateServiceState(context)
-            
+
             // Initial shortcut state
             ShortcutUtil.refreshShortcuts(context, WebSocketUtil.isConnected())
             isNetworkMonitoringActive = true
@@ -663,13 +751,7 @@ class AirSyncViewModel(
         }
     }
 
-    fun setSentryReportingEnabled(enabled: Boolean) {
-        _uiState.value = _uiState.value.copy(isSentryReportingEnabled = enabled)
-        viewModelScope.launch {
-            repository.setSentryReportingEnabled(enabled)
-            // Note: Changes typically take effect on next launch as Sentry is initialized in Application.onCreate
-        }
-    }
+
 
     fun setPitchBlackThemeEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(isPitchBlackThemeEnabled = enabled)
@@ -701,7 +783,8 @@ class AirSyncViewModel(
         _uiState.value = _uiState.value.copy(isQuickShareEnabled = enabled)
         viewModelScope.launch {
             repository.setQuickShareEnabled(enabled)
-            val intent = Intent(context, com.sameerasw.airsync.quickshare.QuickShareService::class.java)
+            val intent =
+                Intent(context, com.sameerasw.airsync.quickshare.QuickShareService::class.java)
             if (enabled) {
                 // Start QuickShareService in foreground discovery mode so it can immediately call startForeground().
                 intent.action = com.sameerasw.airsync.quickshare.QuickShareService.ACTION_START_DISCOVERY
@@ -713,6 +796,21 @@ class AirSyncViewModel(
             } else {
                 context.stopService(intent)
             }
+        }
+    }
+
+    fun setFileAccessEnabled(context: Context, enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(isFileAccessEnabled = enabled)
+        viewModelScope.launch {
+            repository.setFileAccessEnabled(enabled)
+            ServiceManager.updateServiceState(context)
+        }
+    }
+
+    fun setNotifyOnCrashEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(isNotifyOnCrashEnabled = enabled)
+        viewModelScope.launch {
+            repository.setNotifyOnCrashEnabled(enabled)
         }
     }
 
@@ -811,9 +909,11 @@ class AirSyncViewModel(
                                 )
                                 _uiState.value = _uiState.value.copy(isConnecting = false)
                             } else {
-                                // No LAN and no relay: stop active LAN path and service.
+                                // No LAN and no relay: stop any active Wi-Fi WebSocket connection without affecting BLE
                                 try {
-                                    WebSocketUtil.disconnect(context, isManual = false)
+                                    if (WebSocketUtil.isWifiConnected()) {
+                                        WebSocketUtil.disconnect(context, isManual = false)
+                                    }
                                 } catch (_: Exception) {
                                 }
                                 ServiceManager.updateServiceState(context)
@@ -837,11 +937,19 @@ class AirSyncViewModel(
                             val currentPort = WebSocketUtil.currentPort
                             val isSameEndpoint = currentIp != null && currentIp == target.ipAddress && currentPort == target.port.toIntOrNull()
 
+                            // If Wi-Fi WebSocket is connected to old network, disconnect it first
+                            if (WebSocketUtil.isWifiConnected() && !isSameEndpoint) {
+                                try {
+                                    WebSocketUtil.disconnect(context, isManual = false)
+                                } catch (_: Exception) {
+                                }
+                            }
+
                             if (isSameEndpoint) {
                                 Log.i("AirSyncViewModel", "Already connected or connecting to the correct target endpoint: $currentIp:$currentPort. Skipping redundant disconnect/connect.")
                             } else {
                                 // If connected/connecting to old network, disconnect first to force a clean switch
-                                if (WebSocketUtil.isConnected() || WebSocketUtil.isConnecting()) {
+                                if (WebSocketUtil.isWifiConnected() || WebSocketUtil.isConnecting()) {
                                     try {
                                         WebSocketUtil.disconnect(context, isManual = false)
                                     } catch (_: Exception) {
@@ -901,7 +1009,7 @@ class AirSyncViewModel(
                             }
                         } else {
                             // No mapping for this network: disconnect if connected and, if allowed, start generic auto-reconnect
-                            if (WebSocketUtil.isConnected() || WebSocketUtil.isConnecting()) {
+                            if (WebSocketUtil.isWifiConnected() || WebSocketUtil.isConnecting()) {
                                 try {
                                     WebSocketUtil.disconnect(context, isManual = false)
                                 } catch (_: Exception) {
@@ -1000,6 +1108,10 @@ class AirSyncViewModel(
             e.printStackTrace()
             false
         }
+    }
+
+    fun getSymmetricKeyForDevice(deviceName: String): String? {
+        return _networkDevices.value.firstOrNull { it.deviceName == deviceName }?.symmetricKey
     }
 
     // Clipboard history management
@@ -1159,6 +1271,53 @@ class AirSyncViewModel(
         _uiState.value = _uiState.value.copy(isOnboardingCompleted = completed)
         viewModelScope.launch {
             repository.setFirstRun(!completed)
+        }
+    }
+
+    private val _notificationApps =
+        MutableStateFlow<List<com.sameerasw.airsync.domain.model.NotificationApp>>(emptyList())
+    val notificationApps: StateFlow<List<com.sameerasw.airsync.domain.model.NotificationApp>> =
+        _notificationApps.asStateFlow()
+
+    fun loadNotificationApps(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val installed = com.sameerasw.airsync.utils.AppUtil.getInstalledApps(context)
+                val saved = repository.getNotificationApps().first()
+                val merged =
+                    com.sameerasw.airsync.utils.AppUtil.mergeWithSavedApps(installed, saved)
+                _notificationApps.value = merged
+            } catch (e: Exception) {
+                Log.e("AirSyncViewModel", "Failed to load notification apps: ${e.message}")
+            }
+        }
+    }
+
+    fun toggleNotificationApp(context: Context, packageName: String, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val current = _notificationApps.value.map {
+                    if (it.packageName == packageName) it.copy(isEnabled = enabled) else it
+                }
+                _notificationApps.value = current
+                repository.saveNotificationApps(current)
+            } catch (e: Exception) {
+                Log.e("AirSyncViewModel", "Failed to toggle notification app: ${e.message}")
+            }
+        }
+    }
+
+    fun saveAllNotificationApps(
+        context: Context,
+        apps: List<com.sameerasw.airsync.domain.model.NotificationApp>
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _notificationApps.value = apps
+                repository.saveNotificationApps(apps)
+            } catch (e: Exception) {
+                Log.e("AirSyncViewModel", "Failed to save all notification apps: ${e.message}")
+            }
         }
     }
 

@@ -4,25 +4,35 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.sameerasw.airsync.R
 import com.sameerasw.airsync.domain.model.ConnectedDevice
+import com.sameerasw.airsync.presentation.ui.components.sheets.ConnectionSettingsBottomSheet
 import com.sameerasw.airsync.utils.DevicePreviewResolver
 import com.sameerasw.airsync.utils.HapticUtil
 
@@ -33,15 +43,23 @@ fun LastConnectedDeviceCard(
     onToggleAutoReconnect: (Boolean) -> Unit,
     onQuickConnect: () -> Unit,
     onConnectWithRelay: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val haptics = LocalHapticFeedback.current
+    var showBottomSheet by remember { mutableStateOf(false) }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraSmall,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceBright
+        )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
                 "Last Connected Device",
@@ -58,8 +76,7 @@ fun LastConnectedDeviceCard(
                 Image(
                     painter = painterResource(id = previewRes),
                     contentDescription = "Connected Mac preview",
-                    modifier = Modifier
-                        .fillMaxWidth(0.45f),
+                    modifier = Modifier.fillMaxWidth(0.45f),
                     contentScale = ContentScale.Fit,
                     colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(MaterialTheme.colorScheme.primary)
                 )
@@ -70,11 +87,11 @@ fun LastConnectedDeviceCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column{
-
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "${device.name}",
-                        style = MaterialTheme.typography.headlineSmall
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
                     val lastConnectedTime = remember(device.lastConnected) {
@@ -89,19 +106,17 @@ fun LastConnectedDeviceCard(
                     }
                     Text(
                         "Last seen $lastConnectedTime",
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-
                 }
 
-                // Display status badge - PLUS or FREE
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (device.isPlus)
-                            MaterialTheme.colorScheme.primaryContainer
-                        else
-                            MaterialTheme.colorScheme.surfaceVariant
-                    ),
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (device.isPlus)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.padding(start = 8.dp)
                 ) {
                     Text(
@@ -116,12 +131,6 @@ fun LastConnectedDeviceCard(
                 }
             }
 
-//            device.deviceType?.let { type ->
-//                Text("Type: $type", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-//            }
-
-
-
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -135,13 +144,14 @@ fun LastConnectedDeviceCard(
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .requiredHeight(65.dp),
+                        .requiredHeight(48.dp),
                 ) {
                     Icon(
                         painter = painterResource(id = com.sameerasw.airsync.R.drawable.rounded_sync_desktop_24),
                         contentDescription = "Quick connect",
-                        modifier = Modifier.padding(end = 8.dp),
+                        modifier = Modifier.size(18.dp)
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text("Quick Connect")
                 }
 
@@ -152,28 +162,31 @@ fun LastConnectedDeviceCard(
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .requiredHeight(65.dp),
+                        .requiredHeight(48.dp),
                 ) {
-                    Text("Connect with Relay")
+                    Text("Relay")
                 }
             }
+        }
 
-            // Auto-reconnect toggle
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Auto reconnect", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = isAutoReconnectEnabled, onCheckedChange = { enabled ->
-                    if (enabled) HapticUtil.performToggleOn(haptics) else HapticUtil.performToggleOff(
-                        haptics
-                    )
-                    onToggleAutoReconnect(enabled)
-                })
+
+        IconToggleItem(
+            iconRes = R.drawable.rounded_compare_arrows_24,
+            title = stringResource(R.string.bluetooth_settings_card_title),
+            description = stringResource(R.string.bluetooth_settings_card_desc),
+            showToggle = false,
+            onClick = {
+                HapticUtil.performClick(haptics)
+                showBottomSheet = true
             }
+        )
 
+        if (showBottomSheet) {
+            ConnectionSettingsBottomSheet(
+                isAutoReconnectEnabled = isAutoReconnectEnabled,
+                onToggleAutoReconnect = onToggleAutoReconnect,
+                onDismissRequest = { showBottomSheet = false }
+            )
         }
     }
 }
