@@ -1313,8 +1313,10 @@ object WebSocketUtil {
                     }
                     delay(2000) // Allow time for discovery responses
 
-                    // Check discovered devices for the target
-                    val discovered = UDPDiscoveryManager.discoveredDevices.value
+                    // Check discovered devices for the target (combined mdns + UDP
+                    // results: the Mac may only be reachable via one of the two
+                    // backends, e.g. when its UDP presence is intermittent).
+                    val discovered = DiscoveryOrchestrator.discoveredDevices.value
                     val match = discovered.find { it.name == last.name }
 
                     val ips = match?.ips?.joinToString(",")
