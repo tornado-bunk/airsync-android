@@ -92,6 +92,12 @@ object AirBridgeClient {
         if (newState != State.RELAY_ACTIVE) {
             _peerReallyActive.value = false
         }
+        if (newState == State.RELAY_ACTIVE) {
+            // Fresh relay session: the peer may have restarted and its transport
+            // generation counter starts over, so stale higher generations must
+            // not block the next negotiation round.
+            WebSocketUtil.resetTransportNegotiationState()
+        }
     }
 
     /**

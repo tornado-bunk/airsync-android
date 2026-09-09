@@ -1425,6 +1425,18 @@ object WebSocketUtil {
         return age <= TRANSPORT_GENERATION_TTL_MS
     }
 
+    /**
+     * Clears the transport negotiation round. Called when a new relay session is
+     * established: the peer may have restarted and its generation counter starts
+     * over, so a remembered higher generation must not drop the next offers.
+     */
+    fun resetTransportNegotiationState() {
+        activeTransportGeneration.set(0L)
+        validatedTransportGeneration.set(0L)
+        activeTransportGenerationStartedAtMs.set(0L)
+        Log.d(TAG, "Transport negotiation state reset (new relay session)")
+    }
+
     fun markTransportGenerationValidated(generation: Long, reason: String) {
         if (!isTransportGenerationActive(generation)) return
         validatedTransportGeneration.set(generation)
