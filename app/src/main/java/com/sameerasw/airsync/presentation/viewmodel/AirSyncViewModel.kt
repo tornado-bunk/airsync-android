@@ -912,6 +912,17 @@ class AirSyncViewModel(
                         val manual = repository.getUserManuallyDisconnected().first()
                         val autoOn = repository.getAutoReconnectEnabled().first()
 
+                        // Re-attaching to a Wi-Fi network is a new context: a previous
+                        // manual disconnect must not block auto-reconnect forever
+                        // (same semantics as WakeupHandler clearing it on wake).
+                        if (currentIp != "No Wi-Fi" && currentIp != "Unknown" && autoOn && manual) {
+                            repository.setUserManuallyDisconnected(false)
+                            Log.i(
+                                "AirSyncViewModel",
+                                "Network re-attached: clearing manual disconnect flag to allow auto-reconnect"
+                            )
+                        }
+
                         // Determine if we have a mapping for the last connected device on this network
                         val target = hasNetworkAwareMappingForLastDevice()
 
