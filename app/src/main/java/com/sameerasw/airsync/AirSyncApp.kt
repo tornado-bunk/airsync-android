@@ -66,6 +66,13 @@ class AirSyncApp : Application() {
         // Auto-connect if previously enabled
         CoroutineScope(Dispatchers.IO).launch {
             val ds = DataStoreManager.getInstance(this@AirSyncApp)
+            // A paused app must stay fully offline: without this gate a process
+            // restart would silently bring the relay tunnel back up while LAN
+            // discovery and AirSyncService remain suspended.
+            if (ds.isAppPaused().first()) {
+                Log.d("AirSyncApp", "AirSync is paused, skipping AirBridge auto-connect.")
+                return@launch
+            }
             val enabled = ds.getAirBridgeEnabled().first()
             if (enabled) {
                 // Give LAN a 1-second head start if we appear to be on a private LAN.

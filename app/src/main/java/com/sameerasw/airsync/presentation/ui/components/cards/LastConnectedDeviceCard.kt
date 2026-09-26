@@ -19,12 +19,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
@@ -32,21 +30,17 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.sameerasw.airsync.R
 import com.sameerasw.airsync.domain.model.ConnectedDevice
-import com.sameerasw.airsync.presentation.ui.components.sheets.ConnectionSettingsBottomSheet
 import com.sameerasw.airsync.utils.DevicePreviewResolver
 import com.sameerasw.airsync.utils.HapticUtil
 
 @Composable
 fun LastConnectedDeviceCard(
     device: ConnectedDevice,
-    isAutoReconnectEnabled: Boolean,
-    onToggleAutoReconnect: (Boolean) -> Unit,
     onQuickConnect: () -> Unit,
     onConnectWithRelay: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptics = LocalHapticFeedback.current
-    var showBottomSheet by remember { mutableStateOf(false) }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -78,7 +72,7 @@ fun LastConnectedDeviceCard(
                     contentDescription = "Connected Mac preview",
                     modifier = Modifier.fillMaxWidth(0.45f),
                     contentScale = ContentScale.Fit,
-                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(MaterialTheme.colorScheme.primary)
+                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.primary)
                 )
             }
 
@@ -131,62 +125,35 @@ fun LastConnectedDeviceCard(
                 }
             }
 
-            Row(
+            Button(
+                onClick = {
+                    HapticUtil.performClick(haptics)
+                    onQuickConnect()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .requiredHeight(48.dp)
             ) {
-                Button(
-                    onClick = {
-                        HapticUtil.performClick(haptics)
-                        onQuickConnect()
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .requiredHeight(48.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(id = com.sameerasw.airsync.R.drawable.rounded_sync_desktop_24),
-                        contentDescription = "Quick connect",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Quick Connect")
-                }
-
-                Button(
-                    onClick = {
-                        HapticUtil.performClick(haptics)
-                        onConnectWithRelay()
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .requiredHeight(48.dp),
-                ) {
-                    Text("Relay")
-                }
+                Icon(
+                    painter = painterResource(id = R.drawable.rounded_sync_desktop_24),
+                    contentDescription = "Quick connect",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Quick Connect")
             }
-        }
 
-
-        IconToggleItem(
-            iconRes = R.drawable.rounded_compare_arrows_24,
-            title = stringResource(R.string.bluetooth_settings_card_title),
-            description = stringResource(R.string.bluetooth_settings_card_desc),
-            showToggle = false,
-            onClick = {
-                HapticUtil.performClick(haptics)
-                showBottomSheet = true
+            Button(
+                onClick = {
+                    HapticUtil.performClick(haptics)
+                    onConnectWithRelay()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .requiredHeight(48.dp)
+            ) {
+                Text("Relay")
             }
-        )
-
-        if (showBottomSheet) {
-            ConnectionSettingsBottomSheet(
-                isAutoReconnectEnabled = isAutoReconnectEnabled,
-                onToggleAutoReconnect = onToggleAutoReconnect,
-                onDismissRequest = { showBottomSheet = false }
-            )
         }
     }
 }

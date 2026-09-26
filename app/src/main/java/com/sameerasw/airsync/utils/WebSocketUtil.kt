@@ -878,9 +878,22 @@ object WebSocketUtil {
     /**
      * Disconnects the WebSocket and cleans up resources.
      * Stops related services (AirSyncService, periodic sync) and updates UI state.
+     *
+     * @param manual True only for a user-initiated disconnect. Persists the manual-disconnect
+     * flag and tells the Mac so neither side auto-reconnects. Internal/automatic disconnects
+     * (handshake timeout, network change, socket error) must pass false so auto-reconnect can
+     * still resume.
+     * @param notifyPeer Set to false when handling a disconnect that the peer itself initiated,
+     * so the acknowledgement is not echoed back. Over AirBridge the relay keeps the tunnel
+     * alive, so a mutual echo (userDisconnected <-> disconnectRequest) would never terminate.
      */
-    fun disconnect(context: Context? = null, isManual: Boolean = true) {
-        Log.d(TAG, "Disconnecting WebSocket (isManual=$isManual)")
+    fun disconnect(context: Context? = null, manual: Boolean = false, notifyPeer: Boolean = true) {
+        Log.d(TAG, "Disconnecting WebSocket (manual=$manual, notifyPeer=$notifyPeer)")
+
+        if (manual && notifyPeer) {
+            sendMessage("{\"type\":\"userDisconnected\",\"data\":{}}")
+        }
+
         updateConnectedStatus(false)
         isConnecting.set(false)
         isSocketOpen.set(false)
@@ -889,9 +902,8 @@ object WebSocketUtil {
         currentIpAddress = null
         currentPort = null
 
-        // Set manual disconnect flag if requested
         val ctx = context ?: appContext
-        if (isManual) {
+        if (manual) {
             AirBridgeClient.disconnect()
             ctx?.let { c ->
                 CoroutineScope(Dispatchers.IO).launch {
@@ -907,11 +919,11 @@ object WebSocketUtil {
         // Stop periodic sync when disconnecting
         SyncManager.stopPeriodicSync()
         lastAdvertisedTransport.set(null)
-        val probeReason = if (isManual) "manual_disconnect" else "network_change_disconnect"
+        val probeReason = if (manual) "manual_disconnect" else "network_change_disconnect"
         stopLanFirstRelayProbe(probeReason)
         resetLanProbeFailureState(probeReason)
 
-        webSocket?.close(1000, if (isManual) "Manual disconnection" else "Network change disconnection")
+        webSocket?.close(1000, if (manual) "Manual disconnection" else "Disconnected")
         webSocket = null
 
         // Transition back to scanning on disconnect
@@ -949,7 +961,7 @@ object WebSocketUtil {
         // Disconnect any active BLE transport connections
         try {
             val bleManager = com.sameerasw.airsync.AirSyncApp.getBleConnectionManager()
-            if (bleManager != null && bleManager.isAuthenticated) {
+            if (manual && bleManager != null && bleManager.isAuthenticated) {
                 BleTransportBridge.sendManualDisconnect()
             }
             bleManager?.disconnectAllConnectedDevices()

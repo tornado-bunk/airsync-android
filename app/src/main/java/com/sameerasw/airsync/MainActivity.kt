@@ -341,11 +341,18 @@ class MainActivity : ComponentActivity() {
 
         // Check if this is a QS tile long-press intent and device is not connected
         if (intent?.action == "android.service.quicksettings.action.QS_TILE_PREFERENCES") {
-            if (!WebSocketUtil.isConnected()) {
-                // Not connected, open QR scanner instead
-                val qrScannerIntent = Intent(this, QRScannerActivity::class.java)
-                qrScannerLauncher.launch(qrScannerIntent)
-                return
+            val ds = DataStoreManager.getInstance(applicationContext)
+            val isPaused = runBlocking { ds.isAppPaused().first() }
+            if (!isPaused && !WebSocketUtil.isConnected()) {
+                // Not connected and not paused: pause the app on QS tile long-press
+                runBlocking {
+                    ds.setAppPaused(true)
+                }
+                WebSocketUtil.stopAutoReconnect(this)
+                WebSocketUtil.disconnect(this, manual = true)
+                com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator.stop(this)
+                com.sameerasw.airsync.service.AirSyncService.stop(this)
+                ShortcutUtil.refreshShortcuts(this, false)
             }
         }
 
@@ -594,14 +601,18 @@ class MainActivity : ComponentActivity() {
 
         // Check if this is a QS tile long-press intent
         if (intent?.action == "android.service.quicksettings.action.QS_TILE_PREFERENCES") {
-            // Check if device is connected
-            if (!WebSocketUtil.isConnected()) {
-                // Not connected, open QR scanner
-                val qrScannerIntent = Intent(this, QRScannerActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            val ds = DataStoreManager.getInstance(applicationContext)
+            val isPaused = runBlocking { ds.isAppPaused().first() }
+            // Check if device is disconnected and not paused
+            if (!isPaused && !WebSocketUtil.isConnected()) {
+                runBlocking {
+                    ds.setAppPaused(true)
                 }
-                startActivity(qrScannerIntent)
-                finish()
+                WebSocketUtil.stopAutoReconnect(this)
+                WebSocketUtil.disconnect(this, manual = true)
+                com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator.stop(this)
+                com.sameerasw.airsync.service.AirSyncService.stop(this)
+                ShortcutUtil.refreshShortcuts(this, false)
             }
         }
     }
@@ -609,8 +620,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (PermissionUtil.isLocalNetworkPermissionGranted(this)) {
-            AdbDiscoveryHolder.initialize(this)
             val ds = DataStoreManager.getInstance(applicationContext)
+            val isPaused = runBlocking { ds.isAppPaused().first() }
+            if (isPaused) return
+
+            AdbDiscoveryHolder.initialize(this)
             val isDiscoveryEnabled = runBlocking {
                 ds.getDeviceDiscoveryEnabled().first()
             }

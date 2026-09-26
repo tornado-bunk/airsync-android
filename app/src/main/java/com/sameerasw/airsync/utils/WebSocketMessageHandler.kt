@@ -728,15 +728,10 @@ object WebSocketMessageHandler {
 
     private fun handleDisconnectRequest(context: Context) {
         try {
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val dataStoreManager = DataStoreManager(context)
-                    dataStoreManager.setUserManuallyDisconnected(true)
-                } catch (_: Exception) {
-                }
-            }
-            // Immediately disconnect the WebSocket
-            WebSocketUtil.disconnect()
+            // The Mac already performed the manual disconnect, so do not echo
+            // userDisconnected back: over AirBridge the relay keeps the tunnel
+            // alive and the mutual acknowledgement would loop indefinitely.
+            WebSocketUtil.disconnect(context, manual = true, notifyPeer = false)
             Log.d(TAG, "WebSocket disconnected as per request")
         } catch (e: Exception) {
             Log.e(TAG, "Error handling disconnect request: ${e.message}")

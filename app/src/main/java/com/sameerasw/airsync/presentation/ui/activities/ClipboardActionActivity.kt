@@ -55,6 +55,8 @@ import com.sameerasw.airsync.utils.ClipboardUtil
 import com.sameerasw.airsync.utils.ShortcutUtil
 import com.sameerasw.airsync.utils.WebSocketUtil
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 
 class ClipboardActionActivity : ComponentActivity() {
 
@@ -154,10 +156,38 @@ private fun ClipboardActionScreen(
                         onFinished()
                     }
 
-                    ShortcutUtil.DASH_ACTION_DISCONNECT -> {
+                    ShortcutUtil.DASH_ACTION_PAUSE -> {
                         val ds = DataStoreManager.getInstance(context)
-                        ds.setUserManuallyDisconnected(true)
-                        WebSocketUtil.disconnect(context)
+                        ds.setAppPaused(true)
+                        WebSocketUtil.stopAutoReconnect(context)
+                        WebSocketUtil.disconnect(context, manual = true)
+                        com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator.stop(context)
+                        com.sameerasw.airsync.service.AirSyncService.stop(context)
+                        ShortcutUtil.refreshShortcuts(context, false)
+                        uiState = ClipboardUiState.Success
+                        delay(1200)
+                        onFinished()
+                    }
+
+                    ShortcutUtil.DASH_ACTION_RESUME -> {
+                        val ds = DataStoreManager.getInstance(context)
+                        ds.setAppPaused(false)
+                        ds.setUserManuallyDisconnected(false)
+                        val isDiscovery = runBlocking { ds.getDeviceDiscoveryEnabled().first() }
+                        com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator.start(context, isDiscovery)
+                        com.sameerasw.airsync.service.AirSyncService.startScanning(context)
+                        WebSocketUtil.requestAutoReconnect(context)
+                        if (ds.getAirBridgeEnabled().first()) {
+                            com.sameerasw.airsync.utils.AirBridgeClient.connect(context)
+                        }
+                        ShortcutUtil.refreshShortcuts(context, false)
+                        uiState = ClipboardUiState.Success
+                        delay(1200)
+                        onFinished()
+                    }
+
+                    ShortcutUtil.DASH_ACTION_DISCONNECT -> {
+                        WebSocketUtil.disconnect(context, manual = true)
                         uiState = ClipboardUiState.Success
                         delay(1200)
                         onFinished()
@@ -253,6 +283,8 @@ private fun ClipboardActionScreenContent(
                     ShortcutUtil.DASH_ACTION_DISCONNECT -> "Disconnected"
                     ShortcutUtil.DASH_ACTION_RECONNECT -> "Reconnect"
                     ShortcutUtil.DASH_ACTION_REMOTE -> "Opening Remote..."
+                    ShortcutUtil.DASH_ACTION_PAUSE -> "Paused"
+                    ShortcutUtil.DASH_ACTION_RESUME -> "Resumed"
                     else -> connectedDevice?.name ?: stringResource(R.string.your_mac)
                 }
                 Text(
