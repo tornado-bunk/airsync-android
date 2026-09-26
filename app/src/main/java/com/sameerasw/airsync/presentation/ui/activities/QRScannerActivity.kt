@@ -115,6 +115,7 @@ class QRScannerActivity : ComponentActivity() {
                             putExtra("QR_CODE", qrData)
                         }
                         setResult(RESULT_OK, intent)
+                        deliverToMainActivityIfNoCaller(qrData)
                         finish()
                     },
                     onClosed = {
@@ -124,6 +125,36 @@ class QRScannerActivity : ComponentActivity() {
                     activity = this
                 )
             }
+        }
+    }
+
+    /**
+     * When this activity is opened from the launcher shortcut there is no caller waiting on
+     * an ActivityResult, so `setResult` above is discarded and the scanned QR would be lost.
+     * `isTaskRoot` tells the two cases apart: started for a result the scanner sits on top of
+     * MainActivity, started from the shortcut it is the root of its own task.
+     *
+     * MainActivity applies the AirBridge credentials from both its onCreate and onNewIntent
+     * entry points, so either delivery order works.
+     */
+    private fun deliverToMainActivityIfNoCaller(qrData: String) {
+        if (!isTaskRoot) return
+
+        try {
+            val uri = android.net.Uri.parse(qrData)
+            if (uri.scheme != "airsync") {
+                Log.w("QRScannerActivity", "Scanned QR is not an airsync:// URI: $qrData")
+                return
+            }
+            Log.d("QRScannerActivity", "No result caller (launcher shortcut), delivering QR to MainActivity")
+            startActivity(
+                Intent(this, com.sameerasw.airsync.MainActivity::class.java).apply {
+                    data = uri
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+            )
+        } catch (e: Exception) {
+            Log.e("QRScannerActivity", "Failed to deliver scanned QR to MainActivity: ${e.message}", e)
         }
     }
 }
