@@ -1018,6 +1018,18 @@ object WebSocketUtil {
         return isConnected.get() || AirBridgeClient.isRelayActive()
     }
 
+    /**
+     * True when the AirBridge relay is the only usable transport to the Mac.
+     *
+     * Features that rely on local-network broadcasts (Quick Share over NSD / Nearby
+     * Connections) cannot work in this state: the relay forwards AirSync traffic only
+     * and is not reachable from the local network stack. Mirrors the Mac-side
+     * `AppState.isRelayOnlyTransport`.
+     */
+    fun isRelayOnlyTransport(): Boolean {
+        return AirBridgeClient.isRelayActive() && !isConnected()
+    }
+
     private val lastSyncTimeCache = java.util.concurrent.atomic.AtomicLong(0L)
 
     private fun updateLastSyncTime(context: Context) {

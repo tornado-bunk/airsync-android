@@ -143,4 +143,5 @@
     <string name="action_configure">Configure</string>
     <string name="label_device_discovery">Device discovery</string>
     <string name="label_ripple_animation">Ripple animation</string>
+    <string name="quickShare_relay_unavailable">Quick Share needs a local network connection</string>
 </resources>

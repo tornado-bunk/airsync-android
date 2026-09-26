@@ -52,6 +52,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sameerasw.airsync.R
+import com.sameerasw.airsync.utils.WebSocketUtil
 import com.sameerasw.airsync.presentation.viewmodel.AirSyncViewModel
 import com.sameerasw.airsync.service.OutboundQuickShareService
 import com.sameerasw.airsync.ui.theme.AirSyncTheme
@@ -159,6 +160,12 @@ private fun QuickShareSendScreen(
                 reportSummonShortcutUsed(context)
                 uiState = SendUiState.Success
                 delay(1200)
+                onFinished()
+            } else if (WebSocketUtil.isRelayOnlyTransport()) {
+                // Quick Share needs the local network: fail fast instead of reporting
+                // success and leaving a "Looking for ..." notification that cannot resolve.
+                uiState = SendUiState.Error(context.getString(R.string.quickShare_relay_unavailable))
+                delay(2000)
                 onFinished()
             } else {
                 val localUris = withContext(Dispatchers.IO) { copyUrisToCache(context, uris) }

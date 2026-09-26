@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import com.sameerasw.airsync.utils.WebSocketUtil
 import java.io.File
 import java.net.Socket
 
@@ -79,6 +80,20 @@ class OutboundQuickShareService : Service() {
         if (uris.isEmpty()) {
             Log.w(TAG, "No files to send, stopping")
             stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Quick Share resolves the Mac through NSD / Nearby Connections, which are
+        // local-network broadcasts. With the AirBridge relay as the only transport the
+        // discovery can never succeed, so bail out before showing a "Looking for ..."
+        // that is guaranteed to time out.
+        if (WebSocketUtil.isRelayOnlyTransport()) {
+            Log.w(TAG, "Quick Share unavailable: relay-only connection")
+            updateNotification(getString(R.string.quickShare_relay_unavailable))
+            serviceScope.launch {
+                kotlinx.coroutines.delay(2500)
+                stopSelf()
+            }
             return START_NOT_STICKY
         }
 

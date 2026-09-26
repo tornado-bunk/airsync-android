@@ -170,6 +170,10 @@ object ShortcutUtil {
 
 
     private fun buildShareMacShortcut(context: Context): ShortcutInfoCompat? {
+        // Quick Share cannot work over the AirBridge relay, so don't publish the shortcut
+        // in that state: a share target that always fails is worse than no target at all.
+        if (WebSocketUtil.isRelayOnlyTransport()) return null
+
         val dataStoreManager = DataStoreManager.getInstance(context)
         val lastConnectedDevice = runBlocking {
             dataStoreManager.getLastConnectedDevice().first()
