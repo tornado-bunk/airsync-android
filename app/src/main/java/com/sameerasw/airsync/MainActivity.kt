@@ -81,6 +81,9 @@ class MainActivity : ComponentActivity() {
     // Flag to keep splash screen visible during app initialization
     private var isAppReady = false
 
+    // Guards against applying the same scanned AirBridge QR twice (see applyAirBridgeParamsFromUri)
+    private var lastAppliedAirBridgeFingerprint: String? = null
+
     // Permission launcher for Android 13+ notification permission
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -364,9 +367,6 @@ class MainActivity : ComponentActivity() {
         var pcName: String? = null
         var isPlus = false
         var symmetricKey: String? = null
-        var relayUrl: String? = null
-        var airBridgePairingId: String? = null
-        var airBridgeSecret: String? = null
 
         data?.let { uri ->
             val urlString = uri.toString()
@@ -376,38 +376,9 @@ class MainActivity : ComponentActivity() {
             symmetricKey = paramMap["key"]?.let {
                 android.net.Uri.decode(it)
             }
-            relayUrl = paramMap["relay"]?.let { android.net.Uri.decode(it) }
-            airBridgePairingId =
-                paramMap["pairingId"]?.let { android.net.Uri.decode(it) }
-            airBridgeSecret =
-                paramMap["secret"]?.let { android.net.Uri.decode(it) }
         }
 
-        if (!relayUrl.isNullOrBlank() &&
-            !airBridgePairingId.isNullOrBlank() &&
-            !airBridgeSecret.isNullOrBlank()
-        ) {
-            lifecycleScope.launch {
-                try {
-                    val ds = DataStoreManager.getInstance(this@MainActivity)
-                    ds.setAirBridgeRelayUrl(relayUrl!!)
-                    ds.setAirBridgePairingId(airBridgePairingId!!)
-                    ds.setAirBridgeSecret(airBridgeSecret!!)
-                    ds.setAirBridgeEnabled(true)
-
-                    // Provide symmetric key to AirBridgeClient immediately so it doesn't
-                    // refuse connection waiting for a completed LAN handshake first
-                    if (!symmetricKey.isNullOrEmpty()) {
-                        AirBridgeClient.updateSymmetricKey(symmetricKey)
-                    }
-
-                    AirBridgeClient.disconnect()
-                    AirBridgeClient.connect(this@MainActivity)
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Failed to apply AirBridge QR config: ${e.message}", e)
-                }
-            }
-        }
+        applyAirBridgeParamsFromUri(data)
 
         val isFromQrScan = data != null
 
@@ -575,6 +546,8 @@ class MainActivity : ComponentActivity() {
             }
 
             // Valid QR code, proceed with connection
+            applyAirBridgeParamsFromUri(uri)
+
             val mainIntent = Intent(this, MainActivity::class.java).apply {
                 data = uri
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -592,9 +565,70 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Persists the AirBridge credentials carried by a scanned `airsync://` QR and brings the
+     * relay up.
+     *
+     * Must be called from every entry point that can deliver a scanned QR, not just onCreate:
+     * the in-app scanner re-launches this activity with FLAG_ACTIVITY_CLEAR_TOP, so when the
+     * app is already running the intent is delivered to onNewIntent and onCreate never runs.
+     */
+    private fun applyAirBridgeParamsFromUri(uri: android.net.Uri?) {
+        if (uri == null) return
+        val paramMap = parseAirsyncParams(uri.toString())
+        val relayUrl = paramMap["relay"]?.let { android.net.Uri.decode(it) }
+        val pairingId = paramMap["pairingId"]?.let { android.net.Uri.decode(it) }
+        val secret = paramMap["secret"]?.let { android.net.Uri.decode(it) }
+        val symmetricKey = paramMap["key"]?.let { android.net.Uri.decode(it) }
+
+        if (relayUrl.isNullOrBlank() || pairingId.isNullOrBlank() || secret.isNullOrBlank()) {
+            Log.d(
+                "MainActivity",
+                "QR has no AirBridge params (relay=${!relayUrl.isNullOrBlank()} pairingId=${!pairingId.isNullOrBlank()} secret=${!secret.isNullOrBlank()}). Is AirBridge enabled on the Mac and the connection mode set to Dynamic?"
+            )
+            return
+        }
+
+        // The same QR reaches us twice (scanner result + onNewIntent relaunch). Applying it
+        // once avoids tearing down and re-establishing the relay for no reason.
+        val fingerprint = "$relayUrl|$pairingId|$secret"
+        if (fingerprint == lastAppliedAirBridgeFingerprint) {
+            Log.d("MainActivity", "AirBridge params already applied for this QR, skipping duplicate apply")
+            return
+        }
+        lastAppliedAirBridgeFingerprint = fingerprint
+        Log.d("MainActivity", "Applying AirBridge params from QR: relay=$relayUrl pairingId=$pairingId")
+
+        lifecycleScope.launch {
+            try {
+                val ds = DataStoreManager.getInstance(this@MainActivity)
+                ds.setAirBridgeRelayUrl(relayUrl)
+                ds.setAirBridgePairingId(pairingId)
+                ds.setAirBridgeSecret(secret)
+                ds.setAirBridgeEnabled(true)
+
+                // Provide symmetric key to AirBridgeClient immediately so it doesn't
+                // refuse connection waiting for a completed LAN handshake first
+                if (!symmetricKey.isNullOrEmpty()) {
+                    AirBridgeClient.updateSymmetricKey(symmetricKey)
+                }
+
+                AirBridgeClient.disconnect()
+                AirBridgeClient.connect(this@MainActivity)
+            } catch (e: Exception) {
+                lastAppliedAirBridgeFingerprint = null
+                Log.e("MainActivity", "Failed to apply AirBridge QR config: ${e.message}", e)
+            }
+        }
+    }
+
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+
+        // A scanned QR re-delivered to the already-running activity: onCreate is skipped,
+        // so the AirBridge credentials have to be applied here.
+        applyAirBridgeParamsFromUri(intent?.data)
 
         // Handle Notes Role intent
         handleNotesRoleIntent(intent)
