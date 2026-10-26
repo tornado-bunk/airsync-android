@@ -60,52 +60,19 @@ object DeviceInfoUtil {
 
     fun getWifiIpAddress(context: Context): String? {
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Use ConnectivityManager and LinkProperties for Android 12+
-                val connectivityManager =
-                    context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                val activeNetwork = connectivityManager.activeNetwork
-                val networkCapabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
-                if (networkCapabilities != null &&
-                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                ) {
-                    val linkProperties: LinkProperties? =
-                        connectivityManager.getLinkProperties(activeNetwork)
-                    linkProperties?.linkAddresses?.forEach { linkAddress ->
-                        val address = linkAddress.address
-                        if (address is Inet4Address && !address.isLoopbackAddress) {
-                            return address.hostAddress
-                        }
-                    }
-                }
-                // Fallback to local IP if not found
-                getLocalIpAddress()
-            } else {
-                // Deprecated method for older versions
-                val wifiManager =
-                    context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-
-                @Suppress("DEPRECATION")
-                val wifiInfo = wifiManager.connectionInfo
-
-                @Suppress("DEPRECATION")
-                val ipAddress = wifiInfo.ipAddress
-                if (ipAddress != 0) {
-                    String.format(
-                        Locale.US,
-                        "%d.%d.%d.%d",
-                        ipAddress and 0xff,
-                        ipAddress shr 8 and 0xff,
-                        ipAddress shr 16 and 0xff,
-                        ipAddress shr 24 and 0xff
-                    )
-                } else {
-                    getLocalIpAddress()
-                }
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val preferred = TrustedNetworks.currentObservation()?.network
+            val physical = cm.allNetworks.filter { network ->
+                val caps = cm.getNetworkCapabilities(network)
+                caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                    (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+            }.sortedByDescending { it == preferred }
+            physical.firstNotNullOfOrNull { network ->
+                cm.getLinkProperties(network)?.linkAddresses?.firstOrNull {
+                    it.address is Inet4Address && !it.address.isLoopbackAddress
+                }?.address?.hostAddress
             }
-        } catch (_: Exception) {
-            getLocalIpAddress()
-        }
+        } catch (_: Exception) { null }
     }
 
     fun getBatteryInfo(context: Context): BatteryInfo {

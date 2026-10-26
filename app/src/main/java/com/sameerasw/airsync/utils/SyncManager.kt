@@ -31,12 +31,11 @@ object SyncManager {
     private const val SKIP_SUPPRESSION_DURATION = 1000L // 1 second suppression after skip command
 
     fun startPeriodicSync(context: Context) {
-        if (isSyncing.get()) {
+        if (!isSyncing.compareAndSet(false, true)) {
             Log.d(TAG, "Sync already running")
             return
         }
 
-        isSyncing.set(true)
         syncJob = CoroutineScope(Dispatchers.IO).launch {
             Log.d(TAG, "Starting periodic sync")
 
@@ -80,7 +79,7 @@ object SyncManager {
     }
 
     fun checkAndSyncDeviceStatus(context: Context, forceSync: Boolean = false) {
-        if (!WebSocketUtil.isConnected()) {
+        if (!WebSocketUtil.isConnected() && !AirBridgeClient.isRelayActive()) {
             return
         }
         CoroutineScope(Dispatchers.IO).launch {

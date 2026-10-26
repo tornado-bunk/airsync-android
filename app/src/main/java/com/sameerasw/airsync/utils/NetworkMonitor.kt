@@ -3,8 +3,8 @@ package com.sameerasw.airsync.utils
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.LinkProperties
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.util.Log
 import com.sameerasw.airsync.domain.model.NetworkInfo
 import kotlinx.coroutines.channels.awaitClose
@@ -30,9 +30,8 @@ object NetworkMonitor {
 
             val isConnected = networkCapabilities != null &&
                     networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            val isWifi =
-                networkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            val ipAddress = if (isWifi) DeviceInfoUtil.getWifiIpAddress(context) else null
+            val ipAddress = DeviceInfoUtil.getWifiIpAddress(context)
+            val isWifi = ipAddress != null
 
             return NetworkInfo(isConnected, isWifi, ipAddress)
         }
@@ -71,14 +70,13 @@ object NetworkMonitor {
                     trySend(info)
                 }
             }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                sendIfChanged()
+            }
         }
 
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .build()
-
-        connectivityManager.registerNetworkCallback(request, networkCallback)
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
 
         awaitClose {
             connectivityManager.unregisterNetworkCallback(networkCallback)

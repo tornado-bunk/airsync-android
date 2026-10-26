@@ -687,7 +687,7 @@ class MainActivity : ComponentActivity() {
         val queryPart = urlString.substringAfter('?', "")
         if (queryPart.isEmpty()) return emptyMap()
 
-        return queryPart.split('?')
+        return queryPart.split(Regex("[?&]"))
             .mapNotNull { raw ->
                 if (raw.isBlank()) return@mapNotNull null
                 val parts = raw.split('=', limit = 2)

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="handoff_connected">Connected</string>
+    <string name="trusted_networks_title">Trusted networks</string>
+    <string name="trusted_networks_description">Direct connections are allowed only on registered networks. Changes sync with your Mac through Airbridge.</string>
+    <string name="trusted_networks_empty">No saved networks</string>
+    <string name="trusted_networks_name">Network name</string>
+    <string name="trusted_networks_add">Add current network</string>
+    <string name="trusted_networks_same_network">Keep your Mac and phone on the same local network during registration. Ethernet and Wi-Fi can be used together.</string>
+    <string name="trusted_networks_save">Save</string>
+    <string name="trusted_networks_cancel">Cancel</string>
+    <string name="trusted_networks_rename">Rename</string>
+    <string name="trusted_networks_remove">Remove</string>
+    <string name="trusted_networks_remove_question">Remove this trusted network?</string>
+    <string name="trusted_networks_remove_description">Both devices will use Airbridge here until you register this network again.</string>
+    <string name="trusted_networks_permission_description">Android requires precise location permission to read the Wi-Fi name. AirSync uses it to recognize networks; it does not request GPS coordinates.</string>
+    <string name="trusted_networks_grant_permission">Allow Wi-Fi recognition</string>
+    <string name="trusted_networks_enable_location">Enable location services for Wi-Fi recognition</string>
+    <string name="trusted_networks_background_description">For automatic switching with the screen off, open Permissions → Location and choose Allow all the time.</string>
+    <string name="trusted_networks_background_permission">Enable background recognition</string>
+    <string name="trusted_networks_add_short">Add</string>
+    <string name="trusted_networks_checking">Verifying network…</string>
+    <string name="trusted_networks_current">Current</string>
+    <string name="trusted_networks_actions">Actions for %1$s</string>
+    <string name="airbridge_credentials">Credentials</string>
+    <string name="airbridge_expanded">Expanded</string>
+    <string name="airbridge_collapsed">Collapsed</string>
+</resources>

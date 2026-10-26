@@ -108,6 +108,8 @@ class DataStoreManager(private val context: Context) {
         private val AIRBRIDGE_RELAY_URL = stringPreferencesKey("airbridge_relay_url")
         private val AIRBRIDGE_PAIRING_ID = stringPreferencesKey("airbridge_pairing_id")
         private val AIRBRIDGE_SECRET = stringPreferencesKey("airbridge_secret")
+        private val AIRBRIDGE_SYMMETRIC_KEY = stringPreferencesKey("airbridge_symmetric_key")
+        private val AIRBRIDGE_KEY_PAIRING_ID = stringPreferencesKey("airbridge_key_pairing_id")
         private val REMOTE_FLIPPED = booleanPreferencesKey("remote_flipped")
 
         private val BLE_SYNC_ENABLED = booleanPreferencesKey("ble_sync_enabled")
@@ -694,6 +696,19 @@ class DataStoreManager(private val context: Context) {
 
     fun getAirBridgeSecret(): Flow<String> {
         return context.dataStore.data.map { it[AIRBRIDGE_SECRET] ?: "" }
+    }
+
+    suspend fun saveAirBridgeSymmetricKey(pairingId: String, key: String) {
+        context.dataStore.edit { prefs ->
+            if (prefs[AIRBRIDGE_PAIRING_ID] == pairingId) {
+                prefs[AIRBRIDGE_KEY_PAIRING_ID] = pairingId
+                prefs[AIRBRIDGE_SYMMETRIC_KEY] = key
+            }
+        }
+    }
+
+    fun getAirBridgeSymmetricKey(): Flow<String?> = context.dataStore.data.map { prefs ->
+        if (prefs[AIRBRIDGE_KEY_PAIRING_ID] == prefs[AIRBRIDGE_PAIRING_ID]) prefs[AIRBRIDGE_SYMMETRIC_KEY] else null
     }
 
     suspend fun setRemoteFlipped(enabled: Boolean) {

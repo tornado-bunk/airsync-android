@@ -174,6 +174,13 @@ fun AirSyncMainScreen(
         "3.0.0"
     }
     val scope = rememberCoroutineScope()
+    var pendingNetworkConnect by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val networkPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        val pending = pendingNetworkConnect
+        pendingNetworkConnect = null
+        if (com.sameerasw.airsync.utils.TrustedNetworks.hasWifiPermission(context)) pending?.invoke()
+        else Toast.makeText(context, context.getString(R.string.trusted_networks_permission_description), Toast.LENGTH_LONG).show()
+    }
     val haptics = LocalHapticFeedback.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val connectScrollState = rememberScrollState()
@@ -311,6 +318,11 @@ fun AirSyncMainScreen(
         port: String = uiState.port,
         symmetricKey: String? = uiState.symmetricKey
     ) {
+        if (!com.sameerasw.airsync.utils.TrustedNetworks.hasWifiPermission(context)) {
+            pendingNetworkConnect = { connect(deviceId, ipAddress, port, symmetricKey) }
+            networkPermissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_COARSE_LOCATION, android.Manifest.permission.ACCESS_FINE_LOCATION))
+            return
+        }
         // Check if critical permissions are missing
         val criticalPermissions =
             com.sameerasw.airsync.utils.PermissionUtil.getCriticalMissingPermissions(context)

@@ -60,7 +60,7 @@ class AirSyncApp : Application() {
     private fun initAirBridge() {
         // Wire message handler: relay messages → existing WebSocket message pipeline
         AirBridgeClient.setMessageHandler { context, message ->
-            WebSocketMessageHandler.handleIncomingMessage(context, message)
+            WebSocketMessageHandler.handleIncomingMessage(context, message, fromRelay = true)
         }
 
         // Auto-connect if previously enabled

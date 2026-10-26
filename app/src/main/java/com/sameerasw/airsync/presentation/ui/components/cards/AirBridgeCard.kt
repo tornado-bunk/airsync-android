@@ -2,6 +2,7 @@ package com.sameerasw.airsync.presentation.ui.components.cards
 
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -31,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -39,12 +42,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import com.sameerasw.airsync.R
 import com.sameerasw.airsync.data.local.DataStoreManager
 import com.sameerasw.airsync.utils.AirBridgeClient
 import com.sameerasw.airsync.utils.HapticUtil
@@ -57,6 +66,9 @@ fun AirBridgeCard(context: Context) {
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
 
+    var credentialsExpanded by rememberSaveable { mutableStateOf(false) }
+    val chevronRotation by animateFloatAsState(if (credentialsExpanded) 180f else 0f, label = "credentialsChevron")
+    val expansionState = stringResource(if (credentialsExpanded) R.string.airbridge_expanded else R.string.airbridge_collapsed)
     var enabled by remember { mutableStateOf(false) }
     var relayUrl by remember { mutableStateOf("") }
     var pairingId by remember { mutableStateOf("") }
@@ -99,6 +111,7 @@ fun AirBridgeCard(context: Context) {
                     checked = enabled,
                     onCheckedChange = { newValue ->
                         enabled = newValue
+                        if (!newValue) credentialsExpanded = false
                         if (newValue) HapticUtil.performToggleOn(haptics)
                         else HapticUtil.performToggleOff(haptics)
                         scope.launch {
@@ -178,78 +191,94 @@ fun AirBridgeCard(context: Context) {
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Relay URL
-                    OutlinedTextField(
-                        value = relayUrl,
-                        onValueChange = { relayUrl = it },
-                        label = { Text("Relay Server URL") },
-                        placeholder = { Text("airbridge.yourdomain.com") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    var credentialsVisible by remember { mutableStateOf(false) }
-
-                    // Pairing ID (paste from Mac)
-                    OutlinedTextField(
-                        value = pairingId,
-                        onValueChange = { pairingId = it },
-                        label = { Text("Pairing ID") },
-                        placeholder = { Text("Your Pairing ID") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        visualTransformation = if (credentialsVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        trailingIcon = {
-                            androidx.compose.material3.IconButton(onClick = { credentialsVisible = !credentialsVisible }) {
-                                Icon(
-                                    imageVector = if (credentialsVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
-                                    contentDescription = if (credentialsVisible) "Hide credentials" else "Show credentials"
-                                )
-                            }
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Secret (paste from Mac)
-                    OutlinedTextField(
-                        value = secret,
-                        onValueChange = { secret = it },
-                        label = { Text("Secret") },
-                        placeholder = { Text("Your Secret") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        visualTransformation = if (credentialsVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        trailingIcon = {
-                            androidx.compose.material3.IconButton(onClick = { credentialsVisible = !credentialsVisible }) {
-                                Icon(
-                                    imageVector = if (credentialsVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
-                                    contentDescription = if (credentialsVisible) "Hide credentials" else "Show credentials"
-                                )
-                            }
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Save & Reconnect
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                ds.setAirBridgeRelayUrl(relayUrl)
-                                ds.setAirBridgePairingId(pairingId)
-                                ds.setAirBridgeSecret(secret)
-                                AirBridgeClient.disconnect()
-                                kotlinx.coroutines.delay(500)
-                                AirBridgeClient.connect(context)
-                                Toast.makeText(context, "Settings saved, reconnecting...", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                    TextButton(
+                        onClick = { credentialsExpanded = !credentialsExpanded },
+                        modifier = Modifier.fillMaxWidth().semantics { stateDescription = expansionState }
                     ) {
-                        Text("Save & Reconnect")
+                        Text(stringResource(R.string.airbridge_credentials), modifier = Modifier.weight(1f))
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null,
+                            modifier = Modifier.rotate(chevronRotation))
+                    }
+                    AnimatedVisibility(
+                        visible = credentialsExpanded,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        Column {
+                            // Relay URL
+                            OutlinedTextField(
+                                value = relayUrl,
+                                onValueChange = { relayUrl = it },
+                                label = { Text("Relay Server URL") },
+                                placeholder = { Text("airbridge.yourdomain.com") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            var credentialsVisible by remember { mutableStateOf(false) }
+
+                            // Pairing ID (paste from Mac)
+                            OutlinedTextField(
+                                value = pairingId,
+                                onValueChange = { pairingId = it },
+                                label = { Text("Pairing ID") },
+                                placeholder = { Text("Your Pairing ID") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                visualTransformation = if (credentialsVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    androidx.compose.material3.IconButton(onClick = { credentialsVisible = !credentialsVisible }) {
+                                        Icon(
+                                            imageVector = if (credentialsVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                            contentDescription = if (credentialsVisible) "Hide credentials" else "Show credentials"
+                                        )
+                                    }
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Secret (paste from Mac)
+                            OutlinedTextField(
+                                value = secret,
+                                onValueChange = { secret = it },
+                                label = { Text("Secret") },
+                                placeholder = { Text("Your Secret") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                visualTransformation = if (credentialsVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    androidx.compose.material3.IconButton(onClick = { credentialsVisible = !credentialsVisible }) {
+                                        Icon(
+                                            imageVector = if (credentialsVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                            contentDescription = if (credentialsVisible) "Hide credentials" else "Show credentials"
+                                        )
+                                    }
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Save & Reconnect
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        ds.setAirBridgeRelayUrl(relayUrl)
+                                        ds.setAirBridgePairingId(pairingId)
+                                        ds.setAirBridgeSecret(secret)
+                                        AirBridgeClient.disconnect()
+                                        kotlinx.coroutines.delay(500)
+                                        AirBridgeClient.connect(context)
+                                        Toast.makeText(context, "Settings saved, reconnecting...", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Save & Reconnect")
+                            }
+                        }
                     }
                 }
             }

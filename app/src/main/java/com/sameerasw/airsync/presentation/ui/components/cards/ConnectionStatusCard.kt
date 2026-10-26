@@ -5,7 +5,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -25,8 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -41,10 +38,7 @@ import androidx.compose.ui.res.stringResource
 import com.sameerasw.airsync.R
 import com.sameerasw.airsync.domain.model.ConnectedDevice
 import com.sameerasw.airsync.domain.model.UiState
-import com.sameerasw.airsync.presentation.ui.components.RotatingAppIcon
-import androidx.compose.ui.graphics.Color
 import com.sameerasw.airsync.presentation.ui.components.AirSyncLoadingAnimation
-import com.sameerasw.airsync.utils.AirBridgeClient
 import com.sameerasw.airsync.utils.DevicePreviewResolver
 import com.sameerasw.airsync.utils.HapticUtil
 
@@ -136,65 +130,6 @@ fun ConnectionStatusCard(
                     }
                 }
 
-                val peerReallyActive by AirBridgeClient.peerReallyActive.collectAsState()
-
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (uiState.isRelayConnection) {
-                        // When connected via relay only, show AirBridge indicator instead of LAN IPs
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            modifier = Modifier.animateContentSize()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = com.sameerasw.airsync.R.drawable.rounded_web_24),
-                                    contentDescription = "AirBridge",
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.onTertiaryContainer
-                                )
-                                Text(
-                                    text = "AirBridge",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onTertiaryContainer
-                                )
-                            }
-                        }
-
-                        // Peer health dot
-                        Text(
-                            text = "●",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (peerReallyActive) Color(0xFF4CAF50) else Color(0xFFFF9800)
-                        )
-                    } else {
-                        val ips =
-                            uiState.ipAddress.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                        ips.forEach { ip ->
-                            val isActive = ip == uiState.activeIp
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.animateContentSize()
-                            ) {
-                                Text(
-                                    text = "$ip:${connectedDevice.port}",
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (isActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
             }
 
             AnimatedVisibility(
@@ -225,7 +160,9 @@ fun ConnectionStatusCard(
                 val statusText = when {
                     isPaused -> stringResource(R.string.paused)
                     isConnecting -> "Connecting..."
-                    isConnected -> "Syncing"
+                    isConnected && uiState.isRelayConnection -> "AirBridge"
+                    isConnected && uiState.activeIp != null -> "LAN"
+                    isConnected -> "Bluetooth"
                     else -> stringResource(R.string.disconnected)
                 }
 
@@ -238,9 +175,11 @@ fun ConnectionStatusCard(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(end = 8.dp)
                     ) {
-                        AirSyncLoadingAnimation(
-                            isPlus = connectedDevice?.isPlus == true,
-                            modifier = Modifier.size(36.dp)
+                        Icon(
+                            painter = painterResource(R.drawable.rounded_check_24),
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp),
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                 } else if (!isConnecting) {

@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.LinkProperties
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
@@ -21,6 +22,8 @@ import com.sameerasw.airsync.R
 import com.sameerasw.airsync.utils.AirBridgeClient
 import com.sameerasw.airsync.data.local.DataStoreManager
 import com.sameerasw.airsync.utils.DiscoveryMode
+import com.sameerasw.airsync.utils.NetworkHandoffTracker
+import com.sameerasw.airsync.utils.TrustedNetworks
 import com.sameerasw.airsync.utils.MacDeviceStatusManager
 import com.sameerasw.airsync.utils.ShortcutUtil
 import com.sameerasw.airsync.utils.discovery.DiscoveryOrchestrator
@@ -30,6 +33,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -51,6 +56,8 @@ class AirSyncService : Service() {
 
     // Network state tracking
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var networkHandoffJob: Job? = null
+    private val networkHandoffTracker = NetworkHandoffTracker()
 
     private val connectionStatusListener: (Boolean) -> Unit = { _ ->
         scope.launch {
@@ -85,6 +92,13 @@ class AirSyncService : Service() {
         }
 
         promoteToForeground()
+        scope.launch {
+            TrustedNetworks.load(applicationContext)
+            while (isActive) {
+                TrustedNetworks.reconcileConnection(applicationContext)
+                delay(10_000)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -271,58 +285,64 @@ class AirSyncService : Service() {
         try {
             val connectivityManager =
                 getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            val builder = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-
             networkCallback = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    Log.d(
-                        TAG,
-                        "Network available, triggering burst broadcast and refreshing socket"
-                    )
-                    // Refresh UDP socket to bind to new network interface
-                    DiscoveryOrchestrator.refreshSocket()
-                    // When network becomes available, do a burst to announce ourselves
-                    if (isScanning && !com.sameerasw.airsync.data.ble.BleGattServer.isAnyAuthenticated()) {
-                        DiscoveryOrchestrator.burstBroadcast(applicationContext)
-                        WebSocketUtil.requestAutoReconnect(applicationContext)
-                        // If relay is already active, also force a direct LAN retry immediately.
-                        if (AirBridgeClient.isRelayConnectedOrConnecting()) {
-                            WebSocketUtil.sendTransportOffer(
-                                context = applicationContext,
-                                reason = "network_onAvailable_scanning"
-                            )
-                            WebSocketUtil.startLanFirstRelayProbe(
-                                context = applicationContext,
-                                immediate = true,
-                                source = "network_onAvailable_scanning",
-                                resetBackoff = true
-                            )
+                private fun refreshNetwork() {
+                    scope.launch {
+                        networkHandoffJob?.cancel()
+                        networkHandoffJob = scope.launch handoff@ {
+                            // onAvailable can precede DHCP and the default-route update.
+                            delay(500)
+                            networkHandoffJob = null
+                            TrustedNetworks.refresh(applicationContext)
+                            val physical = TrustedNetworks.currentObservation()?.network ?: connectivityManager.allNetworks.firstOrNull {
+                                val caps = connectivityManager.getNetworkCapabilities(it)
+                                caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                                    (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+                            }
+                            val network = physical ?: connectivityManager.activeNetwork
+                            val links = physical?.let { connectivityManager.getLinkProperties(it) }
+                            val isLan = physical != null
+                            val address = links?.linkAddresses?.firstOrNull {
+                                it.address is java.net.Inet4Address && !it.address.isLoopbackAddress
+                            }?.address?.hostAddress
+                            if (isLan && address == null) return@handoff
+                            val hadNetwork = networkHandoffTracker.hasNetwork
+                            if (!networkHandoffTracker.update(network?.toString(), address)) return@handoff
+
+                            Log.i(TAG, "Default network changed: LAN=${address != null}, network=$network")
+                            DiscoveryOrchestrator.refreshSocket()
+                            WebSocketUtil.cancelAutoReconnect()
+                            if (hadNetwork && (WebSocketUtil.isWifiConnected() || WebSocketUtil.isConnecting())) {
+                                WebSocketUtil.disconnect(applicationContext, manual = false)
+                            }
+                            if (address == null) WebSocketUtil.stopLanFirstRelayProbe("lan_unavailable")
+
+                            val ds = DataStoreManager.getInstance(applicationContext)
+                            if (ds.getUserManuallyDisconnected().first() || !ds.getAutoReconnectEnabled().first()) {
+                                return@handoff
+                            }
+                            if (network == null) return@handoff
+                            if (hadNetwork) AirBridgeClient.networkChanged(applicationContext)
+                            else AirBridgeClient.ensureConnected(applicationContext, immediate = true)
+                            if (address != null) {
+                                DiscoveryOrchestrator.burstBroadcast(applicationContext)
+                                WebSocketUtil.requestAutoReconnect(applicationContext)
+                            } else {
+                                WebSocketUtil.notifyPeerTransportChanged("relay", force = true)
+                            }
                         }
-                    } else if (isScanning) {
-                        DiscoveryOrchestrator.burstBroadcast(applicationContext)
-                    }
-                    // When WiFi returns while relay is active but LAN is down,
-                    // attempt to re-establish the preferred local connection.
-                    if (!isScanning && !WebSocketUtil.isConnected() && AirBridgeClient.isRelayActive()) {
-                        Log.i(TAG, "WiFi available while relay is active — attempting LAN reconnect")
-                        DiscoveryOrchestrator.burstBroadcast(applicationContext)
-                        WebSocketUtil.sendTransportOffer(
-                            context = applicationContext,
-                            reason = "network_onAvailable_sync"
-                        )
-                        WebSocketUtil.startLanFirstRelayProbe(
-                            context = applicationContext,
-                            immediate = true,
-                            source = "network_onAvailable_sync",
-                            resetBackoff = true
-                        )
                     }
                 }
+
+                override fun onAvailable(network: Network) = refreshNetwork()
+                override fun onLost(network: Network) = refreshNetwork()
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refreshNetwork()
+                override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) = refreshNetwork()
             }
 
-            connectivityManager.registerNetworkCallback(builder.build(), networkCallback!!)
+            connectivityManager.registerNetworkCallback(NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build(), networkCallback!!)
         } catch (e: Exception) {
             Log.e(TAG, "Error registering network callback", e)
         }

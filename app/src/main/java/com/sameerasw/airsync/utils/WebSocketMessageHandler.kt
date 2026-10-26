@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -73,11 +74,15 @@ object WebSocketMessageHandler {
      * @param context Application context for performing actions.
      * @param message Raw JSON message string.
      */
-    fun handleIncomingMessage(context: Context, json: String) {
-        Log.d(TAG, "Received WebSocket message: $json")
+    fun handleIncomingMessage(context: Context, json: String, fromRelay: Boolean = false) {
+        // Application payloads can contain clipboard text and notification replies.
         try {
             val jsonObject = JSONObject(json)
             val type = jsonObject.optString("type")
+            if (fromRelay && type in setOf("browseLs", "refreshAdbPorts", "startQuickShare")) {
+                Log.w(TAG, "Rejected LAN-only command via relay: $type")
+                return
+            }
             Log.d(TAG, "Processing message type: $type")
             val data = jsonObject.optJSONObject("data") ?: JSONObject()
 
@@ -86,6 +91,7 @@ object WebSocketMessageHandler {
             }
 
             when (type) {
+                "trustedNetworks" -> TrustedNetworks.handle(context, data)
                 "clipboardUpdate" -> handleClipboardUpdate(context, data)
                 "volumeControl" -> handleVolumeControl(context, data)
                 "mediaControl" -> handleMediaControl(context, data)
@@ -96,7 +102,7 @@ object WebSocketMessageHandler {
                 "toggleNowPlaying" -> handleToggleNowPlaying(context, data)
                 "macVolume" -> handleMacVolume(data)
                 "modifierStatus" -> handleModifierStatus(data)
-                "ping" -> handlePing(context)
+                "ping" -> handlePing(context, fromRelay)
                 "status" -> handleMacDeviceStatus(context, data)
                 "macWake" -> handleMacWake(context, data)
                 "peerTransport" -> handlePeerTransport(data)
@@ -447,11 +453,11 @@ object WebSocketMessageHandler {
         }
     }
 
-    private fun handlePing(context: Context) {
+    private fun handlePing(context: Context, fromRelay: Boolean) {
         try {
             // Reply immediately with lightweight pong message to keep session active
             val pongJson = "{\"type\":\"pong\",\"data\":{}}"
-            WebSocketUtil.sendMessage(pongJson)
+            if (fromRelay) AirBridgeClient.sendMessage(pongJson) else WebSocketUtil.sendMessage(pongJson)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling ping: ${e.message}")
         }
@@ -459,6 +465,15 @@ object WebSocketMessageHandler {
 
     private fun handleMacWake(context: Context, data: JSONObject?) {
         try {
+            if (data?.has("networkIDs") == true) {
+                val ids = data.optJSONArray("networkIDs") ?: JSONArray()
+                TrustedNetworks.updatePeerNetworks(context, (0 until ids.length()).map { ids.optString(it) }.toSet())
+            }
+            if (data?.has("lanAllowed") == true) {
+                val allowed = data.optBoolean("lanAllowed", false)
+                WebSocketUtil.updatePeerLanPolicy(context, allowed)
+                if (!allowed) return
+            }
             val ips = data?.optString("ips", "") ?: ""
             val port = data?.optInt("port", -1) ?: -1
 
@@ -466,7 +481,7 @@ object WebSocketMessageHandler {
                 try {
                     val ds = DataStoreManager.getInstance(context)
                     val last = ds.getLastConnectedDevice().first()
-                    val key = last?.symmetricKey
+                    val key = ds.getAirBridgeSymmetricKey().first() ?: last?.symmetricKey
 
                     if (!WebSocketUtil.isConnected() && !WebSocketUtil.isConnecting()) {
                         if (ips.isNotBlank() && port > 0 && key != null) {
@@ -605,7 +620,7 @@ object WebSocketMessageHandler {
             val port = candidateResult.port
             CoroutineScope(Dispatchers.IO).launch {
                 val ds = DataStoreManager.getInstance(context)
-                val key = ds.getLastConnectedDevice().first()?.symmetricKey
+                val key = ds.getAirBridgeSymmetricKey().first() ?: ds.getLastConnectedDevice().first()?.symmetricKey
                 if (ipsCsv.isBlank() || port <= 0 || key.isNullOrBlank()) {
                     Log.w(TAG, "Dropped transport offer with invalid candidates")
                     WebSocketUtil.reportLanNegotiationFailure("offer_missing_candidates_or_key")
@@ -658,7 +673,7 @@ object WebSocketMessageHandler {
 
             CoroutineScope(Dispatchers.IO).launch {
                 val ds = DataStoreManager.getInstance(context)
-                val key = ds.getLastConnectedDevice().first()?.symmetricKey
+                val key = ds.getAirBridgeSymmetricKey().first() ?: ds.getLastConnectedDevice().first()?.symmetricKey
                 if (ipsCsv.isBlank() || port <= 0 || key.isNullOrBlank()) {
                     Log.w(TAG, "Dropped transport answer with invalid candidates")
                     return@launch

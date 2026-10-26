@@ -46,6 +46,9 @@ object WebSocketUtil {
     private var currentSymmetricKey: javax.crypto.SecretKey? = null
     private val isConnected = AtomicBoolean(false)
     private val isConnecting = AtomicBoolean(false)
+    private val lanConnectionGeneration = AtomicLong(0)
+    private val activeLanNonce = AtomicReference<String?>(null)
+    private val pendingLanSockets = java.util.concurrent.CopyOnWriteArrayList<WebSocket>()
 
     private fun updateConnectedStatus(status: Boolean) {
         isConnected.set(status)
@@ -62,6 +65,7 @@ object WebSocketUtil {
 
     // Transport state: true after OkHttp onOpen, false after closing/failure/disconnect
     private val isSocketOpen = AtomicBoolean(false)
+    private val networkVerified = AtomicBoolean(false)
     private val handshakeCompleted = AtomicBoolean(false)
     private val connectionStarted = AtomicBoolean(false)
     private val failedAttempts = java.util.concurrent.atomic.AtomicInteger(0)
@@ -75,6 +79,23 @@ object WebSocketUtil {
     private var autoReconnectStartTime: Long = 0L
     private var autoReconnectAttempts: Int = 0
     private val lastRelayLanRetryMs = AtomicLong(0L)
+    private val relayLanRetryInProgress = AtomicBoolean(false)
+    private val peerLanAllowed = AtomicReference<Boolean?>(null)
+
+    fun updatePeerLanPolicy(context: Context, allowed: Boolean) {
+        peerLanAllowed.set(allowed)
+        if (!allowed) {
+            // An empty relay catalog must not cancel the local proof that creates it.
+            if (TrustedNetworks.isVerifying || TrustedNetworks.enrolling.value) {
+                Log.d(TAG, "Keeping pending local network proof while relay reports untrusted LAN")
+                return
+            }
+            stopLanFirstRelayProbe("outside_pairing_network")
+            cancelAutoReconnect()
+            if (isWifiConnected()) disconnect(context, manual = false)
+            notifyPeerTransportChanged("relay", force = true)
+        }
+    }
     private val lastAdvertisedTransport = java.util.concurrent.atomic.AtomicReference<String?>(null)
     private var relayLanProbeJob: Job? = null
     private val relayLanProbeStartedAtMs = AtomicLong(0L)
@@ -120,6 +141,7 @@ object WebSocketUtil {
             put("data", JSONObject().apply {
                 put("source", "android")
                 put("transport", transport) // "wifi" | "relay"
+                put("lanNonce", activeLanNonce.get())
                 put("ts", System.currentTimeMillis())
             })
         }.toString()
@@ -264,7 +286,8 @@ object WebSocketUtil {
         onConnectionStatus: ((Boolean) -> Unit)? = null,
         onMessage: ((String) -> Unit)? = null,
         manualAttempt: Boolean = true,
-        onHandshakeTimeout: (() -> Unit)? = null
+        onHandshakeTimeout: (() -> Unit)? = null,
+        enrollmentRequestID: String? = null
     ) {
         // Cache application context for future cleanup even if callers don't pass context on disconnect
         appContext = context.applicationContext
@@ -279,6 +302,7 @@ object WebSocketUtil {
             cancelAutoReconnect()
         }
 
+        val requestedGeneration = lanConnectionGeneration.get()
         // Validate local network IP
         CoroutineScope(Dispatchers.IO).launch {
             // Handle multiple IPs if provided (comma-separated)
@@ -299,7 +323,36 @@ object WebSocketUtil {
                 return@launch
             }
 
-            isConnecting.set(true)
+            if (requestedGeneration != lanConnectionGeneration.get()) return@launch
+            if (!isConnecting.compareAndSet(false, true)) return@launch
+            if (isConnected.get()) {
+                isConnecting.set(false)
+                return@launch
+            }
+            val generation = lanConnectionGeneration.incrementAndGet()
+            if (symmetricKey.isNullOrBlank()) {
+                isConnecting.set(false)
+                onConnectionStatus?.invoke(false)
+                return@launch
+            }
+            TrustedNetworks.initialize(context, symmetricKey)
+            TrustedNetworks.refresh(context)
+            if (!TrustedNetworks.canConnect(enrollmentRequestID, manualAttempt)) {
+                isConnecting.set(false)
+                onConnectionStatus?.invoke(false)
+                AirBridgeClient.ensureConnected(context, immediate = true)
+                return@launch
+            }
+            val attemptObservation = TrustedNetworks.currentObservation() ?: run {
+                isConnecting.set(false)
+                onConnectionStatus?.invoke(false)
+                return@launch
+            }
+            TrustedNetworks.beginVerification()
+            if (generation != lanConnectionGeneration.get()) return@launch
+            val proofNonce = UUID.randomUUID().toString()
+            pendingLanSockets.forEach { it.cancel() }
+            pendingLanSockets.clear()
             handshakeCompleted.set(false)
             notifyConnectionStatusListeners(false)
 
@@ -313,6 +366,7 @@ object WebSocketUtil {
                 }
             }
 
+            if (generation != lanConnectionGeneration.get()) return@launch
             // Update widgets to show "Connecting…" immediately
             try {
                 AirSyncWidgetProvider.updateAllWidgets(context)
@@ -365,7 +419,7 @@ object WebSocketUtil {
                 // Overall timeout for all parallel connection attempts
                 connectionAttemptJob = CoroutineScope(Dispatchers.IO).launch {
                     delay(15000) // 15 seconds global timeout
-                    if (isConnecting.get() && !isSocketOpen.get()) {
+                    if (generation == lanConnectionGeneration.get() && isConnecting.get() && !isSocketOpen.get()) {
                         Log.w(TAG, "All connection attempts timed out")
                         isConnecting.set(false)
                         onConnectionStatusChanged?.invoke(false)
@@ -405,6 +459,7 @@ object WebSocketUtil {
                             .build()
 
                         val perAttemptClient = client!!.newBuilder()
+                            .socketFactory(attemptObservation.network.socketFactory)
                             .connectTimeout(5, TimeUnit.SECONDS)
                             .readTimeout(
                                 0,
@@ -413,7 +468,12 @@ object WebSocketUtil {
                             .build()
 
                         val listener = object : WebSocketListener() {
+                            private var networkProofAccepted = false
                             override fun onOpen(webSocket: WebSocket, response: Response) {
+                                pendingLanSockets.remove(webSocket)
+                                if (generation != lanConnectionGeneration.get()) { webSocket.cancel(); return }
+                                TrustedNetworks.refresh(context)
+                                if (TrustedNetworks.currentObservation()?.fingerprint != attemptObservation.fingerprint) { webSocket.cancel(); return }
                                 if (isConnected.get() || !connectionStarted.compareAndSet(
                                         false,
                                         true
@@ -426,25 +486,28 @@ object WebSocketUtil {
 
                                 connectionAttemptJob?.cancel()
                                 WebSocketUtil.webSocket = webSocket
+                                activeLanNonce.set(proofNonce)
                                 currentIpAddress = ip // Store the successful IP
+                                networkVerified.set(false)
                                 isSocketOpen.set(true)
                                 updateConnectedStatus(false)
                                 isConnecting.set(true)
 
-                                try {
-                                    SyncManager.performInitialSync(context)
-                                } catch (_: Exception) {
-                                }
+                                val proof = TrustedNetworks.proof(context, ip, enrollmentRequestID, proofNonce)
+                                Log.d(TAG, "Sending local network proof")
+                                val encryptedProof = proof?.let { CryptoUtil.encryptMessage(it.toString(), currentSymmetricKey!!) }
+                                if (encryptedProof == null || !webSocket.send(encryptedProof)) { webSocket.cancel(); return }
 
                                 handshakeTimeoutJob?.cancel()
                                 handshakeTimeoutJob = CoroutineScope(Dispatchers.IO).launch {
                                     try {
                                         delay(HANDSHAKE_TIMEOUT_MS)
-                                        if (!handshakeCompleted.get()) {
+                                        if (generation == lanConnectionGeneration.get() && !handshakeCompleted.get()) {
                                             Log.w(TAG, "Handshake timed out")
                                             updateConnectedStatus(false)
                                             isConnecting.set(false)
                                             isSocketOpen.set(false)
+                                            networkVerified.set(false)
                                             handshakeCompleted.set(false)
                                             handshakeTimeoutJob?.cancel()
                                             connectionAttemptJob?.cancel()
@@ -468,7 +531,7 @@ object WebSocketUtil {
                             }
 
                             override fun onMessage(webSocket: WebSocket, text: String) {
-                                Log.d(TAG, "RAW WebSocket message received: ${text}...")
+                                if (generation != lanConnectionGeneration.get() || webSocket != WebSocketUtil.webSocket) return
                                 val decryptedMessage = currentSymmetricKey?.let { key ->
                                     val decrypted = CryptoUtil.decryptMessage(text, key)
                                     if (decrypted == null) Log.e(
@@ -478,6 +541,22 @@ object WebSocketUtil {
                                     decrypted
                                 } ?: text
 
+                                if (!networkProofAccepted) {
+                                    val response = runCatching { JSONObject(decryptedMessage) }.getOrNull() ?: return
+                                    if (response.optString("type") != "trustedNetworks") return
+                                    val data = response.optJSONObject("data") ?: return
+                                    if (data.optString("op") != "accepted" || !TrustedNetworks.acceptProof(context, data, proofNonce, attemptObservation.fingerprint)) {
+                                        Log.w(TAG, "Local network proof rejected")
+                                        TrustedNetworks.rejectProof(enrollmentRequestID)
+                                        webSocket.cancel()
+                                        return
+                                    }
+                                    networkProofAccepted = true
+                                    Log.i(TAG, "Local network proof accepted")
+                                    networkVerified.set(true)
+                                    SyncManager.performInitialSync(context)
+                                    return
+                                }
                                 if (!handshakeCompleted.get()) {
                                     val handshakeOk = try {
                                         val json = org.json.JSONObject(decryptedMessage)
@@ -501,10 +580,31 @@ object WebSocketUtil {
                                                          context
                                                      )
                                                  ds.setUserManuallyDisconnected(false)
-                                                 val lastDevice = ds.getLastConnectedDevice().first()
+                                                 val info = JSONObject(decryptedMessage).optJSONObject("data")
+                                                 val previous = ds.getLastConnectedDevice().first()
+                                                 val lastDevice = com.sameerasw.airsync.domain.model.ConnectedDevice(
+                                                     name = info?.optString("name")?.takeIf { it.isNotBlank() } ?: "My Mac",
+                                                     ipAddress = ip,
+                                                     port = port.toString(),
+                                                     lastConnected = System.currentTimeMillis(),
+                                                     lastSyncTime = previous?.lastSyncTime,
+                                                     iconSyncCount = previous?.iconSyncCount ?: 0,
+                                                     lastIconSyncDate = previous?.lastIconSyncDate,
+                                                     isPlus = info?.optBoolean("isPlusSubscription", false) == true,
+                                                     symmetricKey = symmetricKey,
+                                                     model = info?.optString("model")?.takeIf { it.isNotBlank() },
+                                                     deviceType = info?.optString("type")?.takeIf { it.isNotBlank() }
+                                                 )
+                                                 // Enrollment also establishes the peer used by future automatic retries.
+                                                 ds.saveLastConnectedDevice(lastDevice)
+                                                 ds.saveNetworkDeviceConnection(lastDevice.name, attemptObservation.address, ip,
+                                                     port.toString(), lastDevice.isPlus, symmetricKey,
+                                                     model = lastDevice.model, deviceType = lastDevice.deviceType)
+                                                 Log.i(TAG, "Saved authenticated LAN peer for automatic reconnect")
+                                                 notifyConnectionStatusListeners(true)
                                                  com.sameerasw.airsync.service.AirSyncService.start(
                                                      context,
-                                                     lastDevice?.name
+                                                     lastDevice.name
                                                  )
                                              } catch (e: Exception) {
                                                  Log.e(
@@ -518,6 +618,8 @@ object WebSocketUtil {
                                         } catch (_: Exception) {
                                         }
 
+                                        val round = getActiveTransportGeneration()
+                                        if (round > 0) sendTransportCheck(round, "lan_handshake_completed")
                                         onConnectionStatusChanged?.invoke(true)
                                         notifyConnectionStatusListeners(true)
                                         cancelAutoReconnect()
@@ -545,6 +647,7 @@ object WebSocketUtil {
                                 code: Int,
                                 reason: String
                             ) {
+                                if (generation != lanConnectionGeneration.get()) return
                                 if (webSocket == WebSocketUtil.webSocket) {
                                     if (code != 1000 || reason != "Manual disconnection") {
                                         if (com.sameerasw.airsync.AirSyncApp.isAppForeground()) {
@@ -561,6 +664,7 @@ object WebSocketUtil {
                                     }
                                     updateConnectedStatus(false)
                                     isSocketOpen.set(false)
+                                    networkVerified.set(false)
                                     isConnecting.set(false)
                                     handshakeCompleted.set(false)
                                     handshakeTimeoutJob?.cancel()
@@ -607,11 +711,13 @@ object WebSocketUtil {
                                 t: Throwable,
                                 response: Response?
                             ) {
+                                pendingLanSockets.remove(webSocket)
+                                if (generation != lanConnectionGeneration.get()) return
                                 val totalToTry = ipList.size
                                 val failedCount = failedAttempts.incrementAndGet()
                                 val wasActive = webSocket == WebSocketUtil.webSocket
                                 val isFinalManualAttempt =
-                                    manualAttempt && !connectionStarted.get() && failedCount >= totalToTry
+                                    !connectionStarted.get() && failedCount >= totalToTry
 
                                 if (wasActive || isFinalManualAttempt) {
                                     if (manualAttempt || isSocketOpen.get()) {
@@ -636,6 +742,7 @@ object WebSocketUtil {
                                     updateConnectedStatus(false)
                                     isConnecting.set(false)
                                     isSocketOpen.set(false)
+                                    networkVerified.set(false)
                                     handshakeCompleted.set(false)
                                     handshakeTimeoutJob?.cancel()
                                     connectionAttemptJob?.cancel()
@@ -670,7 +777,7 @@ object WebSocketUtil {
                                                 AirBridgeClient.ensureConnected(context, immediate = true)
                                                 notifyPeerTransportChanged("relay", force = true)
                                                 if (AirBridgeClient.isRelayConnectedOrConnecting()) {
-                                                    startLanFirstRelayProbe(context, immediate = true, source = "lan_onFailure", resetBackoff = true)
+                                                    startLanFirstRelayProbe(context, immediate = wasActive, source = "lan_onFailure", resetBackoff = wasActive)
                                                 }
                                                 Log.w(TAG, "LAN failure, requested immediate relay fallback")
                                                 if (!AirBridgeClient.isRelayConnectedOrConnecting()) {
@@ -688,7 +795,7 @@ object WebSocketUtil {
                                 }
                             }
                         }
-                        perAttemptClient.newWebSocket(request, listener)
+                        pendingLanSockets.add(perAttemptClient.newWebSocket(request, listener))
                     }
                 }
             } catch (e: Exception) {
@@ -754,8 +861,8 @@ object WebSocketUtil {
      * @return True if the message was enqueued, false if not connected.
      */
     fun sendMessage(message: String): Boolean {
-        // Allow sending as soon as the socket is open (even before handshake completes)
-        if (isSocketOpen.get() && webSocket != null) {
+        // Device handshake may use LAN after network proof, before macInfo completes.
+        if (isSocketOpen.get() && networkVerified.get() && webSocket != null) {
             Log.d(TAG, "Sending message via WebSocket: $message")
             val messageToSend = currentSymmetricKey?.let { key ->
                 CryptoUtil.encryptMessage(message, key)
@@ -889,6 +996,10 @@ object WebSocketUtil {
      */
     fun disconnect(context: Context? = null, manual: Boolean = false, notifyPeer: Boolean = true) {
         Log.d(TAG, "Disconnecting WebSocket (manual=$manual, notifyPeer=$notifyPeer)")
+        lanConnectionGeneration.incrementAndGet()
+        pendingLanSockets.forEach { it.cancel() }
+        pendingLanSockets.clear()
+        connectionAttemptJob?.cancel()
 
         if (manual && notifyPeer) {
             sendMessage("{\"type\":\"userDisconnected\",\"data\":{}}")
@@ -897,6 +1008,7 @@ object WebSocketUtil {
         updateConnectedStatus(false)
         isConnecting.set(false)
         isSocketOpen.set(false)
+        networkVerified.set(false)
         handshakeCompleted.set(false)
         handshakeTimeoutJob?.cancel()
         currentIpAddress = null
@@ -916,8 +1028,8 @@ object WebSocketUtil {
             }
         }
 
-        // Stop periodic sync when disconnecting
-        SyncManager.stopPeriodicSync()
+        // A LAN handoff must keep periodic updates flowing over a warm relay.
+        if (manual || !AirBridgeClient.isRelayActive()) SyncManager.stopPeriodicSync()
         lastAdvertisedTransport.set(null)
         val probeReason = if (manual) "manual_disconnect" else "network_change_disconnect"
         stopLanFirstRelayProbe(probeReason)
@@ -1310,6 +1422,7 @@ object WebSocketUtil {
         if (now - last < 5_000L && source.startsWith("periodic:")) {
             return
         }
+        if (!relayLanRetryInProgress.compareAndSet(false, true)) return
         lastRelayLanRetryMs.set(now)
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -1337,6 +1450,11 @@ object WebSocketUtil {
                     }
                     delay(2000) // Allow time for discovery responses
 
+                    if (!isLanNegotiationAllowed(context) || isConnected.get() || isConnecting.get() ||
+                        ds.getUserManuallyDisconnected().first() || !ds.getAutoReconnectEnabled().first()) {
+                        return@launch
+                    }
+
                     // Check discovered devices for the target (combined mdns + UDP
                     // results: the Mac may only be reachable via one of the two
                     // backends, e.g. when its UDP presence is intermittent).
@@ -1346,7 +1464,7 @@ object WebSocketUtil {
                     val ips = match?.ips?.joinToString(",")
                         ?: targetConnection.getClientIpForNetwork(DeviceInfoUtil.getWifiIpAddress(context) ?: "")
                         ?: last.ipAddress
-                    val port = targetConnection.port.toIntOrNull() ?: 6996
+                    val port = match?.port ?: targetConnection.port.toIntOrNull() ?: 6996
 
                     connect(
                         context = context,
@@ -1378,6 +1496,8 @@ object WebSocketUtil {
             } catch (e: Exception) {
                 markLanProbeFailure("request_exception:$source")
                 Log.e(TAG, "Error in requestLanReconnectFromRelay")
+            } finally {
+                relayLanRetryInProgress.set(false)
             }
         }
     }
@@ -1413,6 +1533,7 @@ object WebSocketUtil {
 
     private fun beginTransportRound(generation: Long, reason: String) {
         if (generation <= 0L) return
+        transportGeneration.updateAndGet { maxOf(it, generation) }
         activeTransportGeneration.set(generation)
         activeTransportGenerationStartedAtMs.set(System.currentTimeMillis())
         validatedTransportGeneration.set(0L)
@@ -1432,7 +1553,7 @@ object WebSocketUtil {
         if (generation == current) return true
 
         val age = System.currentTimeMillis() - activeTransportGenerationStartedAtMs.get()
-        if (age > TRANSPORT_GENERATION_TTL_MS && generation > current) {
+        if (generation > current || age > TRANSPORT_GENERATION_TTL_MS) {
             beginTransportRound(generation, "incoming_rollover:$reason")
             return true
         }
@@ -1455,6 +1576,7 @@ object WebSocketUtil {
      * over, so a remembered higher generation must not drop the next offers.
      */
     fun resetTransportNegotiationState() {
+        transportGeneration.set(0L)
         activeTransportGeneration.set(0L)
         validatedTransportGeneration.set(0L)
         activeTransportGenerationStartedAtMs.set(0L)
@@ -1479,6 +1601,7 @@ object WebSocketUtil {
             return false
         }
         beginTransportRound(generation, "send_offer:$reason")
+        Log.i(TAG, "ICE offer sent: generation=$generation, reason=$reason")
         val localIp = DeviceInfoUtil.getWifiIpAddress(context) ?: ""
         val candidates = JSONArray().apply {
             if (localIp.isNotBlank()) {
@@ -1511,6 +1634,7 @@ object WebSocketUtil {
             Log.w(TAG, "Dropping transport answer for inactive generation")
             return false
         }
+        Log.i(TAG, "ICE answer sent: generation=$generation")
         val localIp = DeviceInfoUtil.getWifiIpAddress(context) ?: ""
         val candidates = JSONArray().apply {
             if (localIp.isNotBlank()) {
@@ -1539,7 +1663,10 @@ object WebSocketUtil {
             Log.w(TAG, "Dropping transport check for inactive generation")
             return false
         }
+        if (isTransportGenerationValidated(generation) ||
+            (pendingTransportCheckGeneration.get() == generation && pendingTransportCheckToken.get() != null)) return true
         val token = UUID.randomUUID().toString()
+        Log.i(TAG, "ICE connectivity check sent: generation=$generation")
         pendingTransportCheckGeneration.set(generation)
         pendingTransportCheckToken.set(token)
         transportCheckTimeoutJob?.cancel()
@@ -1602,6 +1729,7 @@ object WebSocketUtil {
             return
         }
         markTransportGenerationValidated(generation, "check_ack")
+        Log.i(TAG, "ICE connectivity check accepted: generation=$generation")
         notifyPeerTransportChanged("wifi", force = true)
         sendTransportNominate("lan", generation, "check_ack")
     }
@@ -1615,6 +1743,7 @@ object WebSocketUtil {
             Log.w(TAG, "Dropping LAN nominate because generation is not validated")
             return false
         }
+        Log.i(TAG, "ICE nominated path=$path, generation=$generation")
         val payload = JSONObject().apply {
             put("type", "transportNominate")
             put("data", JSONObject().apply {
@@ -1643,18 +1772,9 @@ object WebSocketUtil {
     }
 
     fun isLanNegotiationAllowed(context: Context): Boolean {
-        return try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val network = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            val isLanTransport = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-            if (!isLanTransport) return false
-            val ip = DeviceInfoUtil.getWifiIpAddress(context) ?: return false
-            isPrivateLanIp(ip)
-        } catch (_: Exception) {
-            false
-        }
+        TrustedNetworks.refresh(context)
+        return TrustedNetworks.isRecognized() &&
+            (TrustedNetworks.hasCommonNetwork() || !AirBridgeClient.isRelayActive())
     }
 
     fun updateMacLanInfoFromRelay(ip: String, port: Int) {

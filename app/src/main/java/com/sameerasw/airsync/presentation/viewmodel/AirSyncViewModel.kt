@@ -639,6 +639,7 @@ class AirSyncViewModel(
             isConnecting = isConnecting,
             connectingDeviceId = if (!isConnecting) null else _uiState.value.connectingDeviceId
         )
+        if (!isConnected && AirBridgeClient.isRelayActive()) updateUnifiedConnectionState()
     }
 
     fun setConnectingDeviceId(id: String?) {
@@ -958,17 +959,6 @@ class AirSyncViewModel(
                         val manual = repository.getUserManuallyDisconnected().first()
                         val autoOn = repository.getAutoReconnectEnabled().first()
 
-                        // Re-attaching to a Wi-Fi network is a new context: a previous
-                        // manual disconnect must not block auto-reconnect forever
-                        // (same semantics as WakeupHandler clearing it on wake).
-                        if (currentIp != "No Wi-Fi" && currentIp != "Unknown" && autoOn && manual) {
-                            repository.setUserManuallyDisconnected(false)
-                            Log.i(
-                                "AirSyncViewModel",
-                                "Network re-attached: clearing manual disconnect flag to allow auto-reconnect"
-                            )
-                        }
-
                         // Determine if we have a mapping for the last connected device on this network
                         val target = hasNetworkAwareMappingForLastDevice()
 
@@ -1007,7 +997,8 @@ class AirSyncViewModel(
 
                             val currentIp = WebSocketUtil.currentIpAddress
                             val currentPort = WebSocketUtil.currentPort
-                            val isSameEndpoint = currentIp != null && currentIp == target.ipAddress && currentPort == target.port.toIntOrNull()
+                            val isSameEndpoint = (WebSocketUtil.isWifiConnected() || WebSocketUtil.isConnecting()) &&
+                                currentIp != null && currentIp == target.ipAddress && currentPort == target.port.toIntOrNull()
 
                             // If Wi-Fi WebSocket is connected to old network, disconnect it first
                             if (WebSocketUtil.isWifiConnected() && !isSameEndpoint) {

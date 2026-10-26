@@ -57,7 +57,8 @@ object AirBridgeClient {
     private var client: OkHttpClient? = null
 
     // Symmetric key for relay encryption/decryption
-    private var symmetricKey: SecretKey? = null
+    @Volatile private var symmetricKey: SecretKey? = null
+    @Volatile private var relayProtocol: RelayProtocol? = null
     private var appContext: Context? = null
 
     // Manual disconnect flag
@@ -75,6 +76,7 @@ object AirBridgeClient {
 
     // Prevent concurrent connect attempts to
     private val connectInProgress = AtomicBoolean(false)
+    private val connectRequestGeneration = AtomicLong(0L)
     private val activeConnectionGeneration = AtomicLong(0L)
 
     // Cached view of last status_reply from relay
@@ -117,6 +119,7 @@ object AirBridgeClient {
             return
         }
 
+        val requestGeneration = connectRequestGeneration.incrementAndGet()
         // Read config and connect in background to avoid blocking the caller and allow suspend functions.
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -160,13 +163,17 @@ object AirBridgeClient {
                     return@launch
                 }
 
+                TrustedNetworks.initialize(context, android.util.Base64.encodeToString(symmetricKey!!.encoded, android.util.Base64.NO_WRAP))
+                if (requestGeneration != connectRequestGeneration.get()) return@launch
+                // A relay-first pairing must survive a restart before LAN's first successful handshake.
+                ds.saveAirBridgeSymmetricKey(pairingId, android.util.Base64.encodeToString(symmetricKey!!.encoded, android.util.Base64.NO_WRAP))
                 // Pass raw secret — HMAC computation happens after receiving challenge
                 connectInternal(relayUrl, pairingId, secretRaw)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to read AirBridge config")
                 setState(State.FAILED, "Failed reading persisted config")
             } finally {
-                connectInProgress.set(false)
+                if (requestGeneration == connectRequestGeneration.get()) connectInProgress.set(false)
             }
         }
     }
@@ -175,6 +182,7 @@ object AirBridgeClient {
      * Allows LAN flow to explicitly refresh the relay key, so transport switching is seamless.
      */
     fun updateSymmetricKey(base64Key: String?) {
+        if (base64Key != null) appContext?.let { TrustedNetworks.initialize(it, base64Key) }
         if (base64Key == null) {
             symmetricKey = null
             return
@@ -188,6 +196,9 @@ object AirBridgeClient {
 
     // Resolves the symmetric key for relay encryption/decryption.
     private suspend fun resolveSymmetricKey(ds: DataStoreManager): SecretKey? {
+        ds.getAirBridgeSymmetricKey().first()?.let { saved ->
+            runCatching { CryptoUtil.decodeKey(saved) }.getOrNull()?.let { return it }
+        }
         // First try to get the most recently connected device's key, which is the most likely to be valid.
         val fromLast = ds.getLastConnectedDevice().first()?.symmetricKey
             ?.let { CryptoUtil.decodeKey(it) }
@@ -241,10 +252,32 @@ object AirBridgeClient {
         }
     }
 
+    /** TCP sockets belong to the old route and cannot be carried across a physical handoff. */
+    fun networkChanged(context: Context) {
+        if (isManuallyDisconnected.get()) return
+        connectRequestGeneration.incrementAndGet()
+        activeConnectionGeneration.incrementAndGet()
+        reconnectJob?.cancel()
+        reconnectJob = null
+        statusQueryJob?.cancel()
+        statusQueryJob = null
+        WebSocketUtil.stopLanFirstRelayProbe("network_changed")
+        webSocket?.cancel()
+        webSocket = null
+        relayProtocol = null
+        reconnectAttempt = 0
+        connectInProgress.set(false)
+        setState(State.DISCONNECTED, "Network changed")
+        ensureConnected(context, immediate = true)
+    }
+
     /**
      * Disconnects from the relay server. Disables auto-reconnect.
      */
     fun disconnect() {
+        connectRequestGeneration.incrementAndGet()
+        connectInProgress.set(false)
+        relayProtocol = null
         isManuallyDisconnected.set(true)
         reconnectJob?.cancel()
         reconnectJob = null
@@ -269,15 +302,15 @@ object AirBridgeClient {
     }
 
     /**
-     * Sends a pre-encrypted message through the relay.
+     * Frames and encrypts an application message before sending it through the relay.
      * @return true if the message was enqueued successfully.
      */
+    @Synchronized
     fun sendMessage(message: String): Boolean {
         // Only allow sending if we have an active WebSocket connection and are in a state that should allow relay messages.
         val ws = webSocket ?: return false
-        // Only allow sending relay messages if we're in a state where the relay should be active or soon-to-be-active.
-        if (_connectionState.value != State.RELAY_ACTIVE &&
-            _connectionState.value != State.WAITING_FOR_PEER) {
+        // Application data requires the authenticated peer handshake to be complete.
+        if (_connectionState.value != State.RELAY_ACTIVE) {
             return false
         }
 
@@ -289,7 +322,8 @@ object AirBridgeClient {
         }
 
         // Encrypt the message for relay transport. If encryption fails, drop the message to prevent plaintext leak.
-        val messageToSend = CryptoUtil.encryptMessage(message, key)
+        val frame = relayProtocol?.wrap(message) ?: return false
+        val messageToSend = CryptoUtil.encryptMessage(frame, key)
         if (messageToSend == null) {
             Log.e(TAG, "SECURITY: Encryption failed, dropping message to prevent plaintext leak.")
             return false
@@ -364,6 +398,7 @@ object AirBridgeClient {
     private fun connectInternal(relayUrl: String, pairingId: String, secretRaw: String) {
         // Allocate a fresh generation so callbacks from older sockets are ignored.
         val generation = activeConnectionGeneration.incrementAndGet()
+        relayProtocol = null
 
         // Set state early to prevent concurrent connect attempts and log spam while connection is in progress.
         setState(State.CONNECTING, "Opening websocket to relay")
@@ -486,43 +521,10 @@ object AirBridgeClient {
                     return
                 }
                 "relay_started" -> {
-                    setState(State.RELAY_ACTIVE, "Server confirmed relay tunnel")
-                    reconnectJob?.cancel()
-                    reconnectJob = null
-                    reconnectAttempt = 0
-                    startStatusPolling()
-                    // Advertise effective transport immediately so desktop UI can switch
-                    // icon/actions without waiting for stale local session cleanup.
-                    val transport = if (WebSocketUtil.isConnected()) "wifi" else "relay"
-                    WebSocketUtil.notifyPeerTransportChanged(transport, force = true)
-                    appContext?.let { ctx ->
-                        if (!WebSocketUtil.isConnected()) {
-                            val transportGeneration = WebSocketUtil.nextTransportGeneration()
-                            WebSocketUtil.sendTransportOffer(
-                                context = ctx,
-                                reason = "relay_started",
-                                generation = transportGeneration
-                            )
-                            WebSocketUtil.startLanFirstRelayProbe(
-                                context = ctx,
-                                immediate = true,
-                                source = "relay_started",
-                                resetBackoff = true
-                            )
-                        }
-                    }
-
-                    // Trigger initial sync via relay now that the tunnel is active
-                    appContext?.let { ctx ->
-                        CoroutineScope(Dispatchers.IO).launch {
-                            try {
-                                delay(1000) // Stabilize connection before sending data
-                                SyncManager.performInitialSync(ctx)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to perform initial sync via relay")
-                            }
-                        }
-                    }
+                    setState(State.WAITING_FOR_PEER, "Waiting for authenticated peer challenge")
+                    val protocol = RelayProtocol("android")
+                    relayProtocol = protocol
+                    sendEncryptedFrame(ws, protocol.hello)
                     return
                 }
                 "status_reply" -> {
@@ -535,12 +537,8 @@ object AirBridgeClient {
                     return
                 }
                 "mac_info" -> {
-                    val macIp = json.optString("localIp", "")
-                    val macPort = json.optInt("port", 0)
-                    if (macIp.isNotBlank() && macPort > 0) {
-                        Log.i(TAG, "Received Mac LAN info over relay: $macIp:$macPort")
-                        WebSocketUtil.updateMacLanInfoFromRelay(macIp, macPort)
-                    }
+                    // A relay cannot authenticate LAN endpoint hints. Use the peer's
+                    // encrypted transportOffer/transportAnswer messages instead.
                     return
                 }
                 "error" -> {
@@ -554,22 +552,64 @@ object AirBridgeClient {
             // Not a JSON control message, treat as relayed payload
         }
 
-        // Decrypt and forward to the existing message handler.
-        // Try to decrypt first, but allow plaintext fallback for resilience
-        val key = symmetricKey
-        var processedMessage: String? = null
-
-        if (key != null) {
-            processedMessage = CryptoUtil.decryptMessage(text, key)
+        val key = symmetricKey ?: return
+        val protocol = relayProtocol ?: return
+        val plaintext = CryptoUtil.decryptMessage(text, key) ?: return
+        val result = protocol.receive(plaintext)
+        result.reply?.let { reply ->
+            sendEncryptedFrame(ws, reply)
+            if (_connectionState.value != State.RELAY_ACTIVE) activateRelay()
         }
-
-        if (processedMessage == null) {
-            Log.e(TAG, "SECURITY: Decryption failed or no key available. Dropping relay message.")
-            return
+        result.payload?.let { payload ->
+            if (isRelayActive()) appContext?.let { ctx -> onMessageReceived?.invoke(ctx, payload) }
         }
+    }
 
+    private fun sendEncryptedFrame(ws: WebSocket, frame: String) {
+        val key = symmetricKey ?: return
+        val encrypted = CryptoUtil.encryptMessage(frame, key) ?: return
+        ws.send(encrypted)
+    }
+
+    private fun activateRelay() {
+        setState(State.RELAY_ACTIVE, "Server confirmed relay tunnel")
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttempt = 0
+        startStatusPolling()
+        TrustedNetworks.sendCatalog()
+        // Advertise effective transport immediately so desktop UI can switch
+        // icon/actions without waiting for stale local session cleanup.
+        val transport = if (WebSocketUtil.isWifiConnected()) "wifi" else "relay"
+        WebSocketUtil.notifyPeerTransportChanged(transport, force = true)
         appContext?.let { ctx ->
-            onMessageReceived?.invoke(ctx, processedMessage)
+            if (!WebSocketUtil.isWifiConnected()) {
+                val transportGeneration = WebSocketUtil.nextTransportGeneration()
+                WebSocketUtil.sendTransportOffer(
+                    context = ctx,
+                    reason = "relay_started",
+                    generation = transportGeneration
+                )
+                WebSocketUtil.startLanFirstRelayProbe(
+                    context = ctx,
+                    immediate = true,
+                    source = "relay_started",
+                    resetBackoff = true
+                )
+            }
+        }
+
+        // Trigger initial sync via relay now that the tunnel is active
+        appContext?.let { ctx ->
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    delay(1000) // Stabilize connection before sending data
+                    SyncManager.startPeriodicSync(ctx)
+                    SyncManager.performInitialSync(ctx)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to perform initial sync via relay")
+                }
+            }
         }
     }
 
@@ -617,52 +657,5 @@ object AirBridgeClient {
         }
     }
 
-    /**
-     * Normalizes the relay URL: adds ws:// or wss:// prefix and /ws suffix.
-     * Uses ws:// for localhost/private IPs, wss:// for remote domains.
-     */
-    private fun normalizeRelayUrl(raw: String): String {
-        var url = raw.trim()
-
-        // Extract host for private-IP detection
-        val host: String = run {
-            var h = url
-            if (h.startsWith("wss://")) h = h.removePrefix("wss://")
-            else if (h.startsWith("ws://")) h = h.removePrefix("ws://")
-            h.split(":").firstOrNull()?.split("/")?.firstOrNull() ?: ""
-        }
-
-        val isPrivate = isPrivateHost(host)
-
-        // If user explicitly provided ws://, only allow it for private/localhost hosts.
-        // Upgrade to wss:// for public hosts to prevent cleartext transport over the internet.
-        if (url.startsWith("ws://") && !url.startsWith("wss://") && !isPrivate) {
-            Log.w(TAG, "SECURITY: Upgrading ws:// to wss:// for public host")
-            url = "wss://" + url.removePrefix("ws://")
-        }
-
-        // Add scheme if missing
-        if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
-            url = if (isPrivate) "ws://$url" else "wss://$url"
-        }
-
-        // Add /ws path if missing
-        if (!url.endsWith("/ws")) {
-            url = if (url.endsWith("/")) "${url}ws" else "$url/ws"
-        }
-
-        return url
-    }
-
-    /** Returns true if the host is loopback or RFC 1918 private address. */
-    private fun isPrivateHost(host: String): Boolean {
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1") return true
-        if (host.startsWith("192.168.") || host.startsWith("10.")) return true
-        // RFC 1918: only 172.16.0.0 – 172.31.255.255 (NOT all of 172.*)
-        if (host.startsWith("172.")) {
-            val second = host.split(".").getOrNull(1)?.toIntOrNull()
-            if (second != null && second in 16..31) return true
-        }
-        return false
-    }
+    private fun normalizeRelayUrl(raw: String): String = RelayUrlPolicy.normalize(raw)
 }
